@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Regional Emergency Operations — Mission Control</title>
+  <meta name="description" content="Regional Emergency Operations Mission Control Console for real-time incident management, resource allocation, and disaster response coordination.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <span class="logo-mark">ER</span>
+      <div class="header-title">
+        <strong>Regional Emergency Operations</strong>
+        <span class="header-subtitle">Mission Control Console</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <span id="clock" class="header-clock">--:--:--</span>
+      <span id="health" class="badge neutral">Checking system…</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- KPI Telemetry Strip -->
+    <section class="kpi-strip">
+      <div class="kpi-card">
+        <div class="kpi-label">System Status</div>
+        <div class="kpi-value" id="kpi-status">—</div>
+      </div>
+      <div class="kpi-card kpi-danger-glow" id="kpi-p0-card">
+        <div class="kpi-label">Active P0 Incidents</div>
+        <div class="kpi-value" id="kpi-p0">0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">HTTP Requests</div>
+        <div class="kpi-value" id="kpi-requests">0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Decisions Made</div>
+        <div class="kpi-value" id="kpi-decisions">0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Audit Integrity</div>
+        <div class="kpi-value" id="kpi-audit">—</div>
+      </div>
+    </section>
+
+    <!-- Core Safety Invariants -->
+    <section class="invariants-section">
+      <h2 class="section-title">
+        <span class="section-icon">🛡️</span> Core Safety Invariants
+      </h2>
+      <div class="invariants-grid">
+        <article class="invariant-card">
+          <div class="invariant-icon">🔒</div>
+          <h3>Atomic Resource Holds</h3>
+          <p>Conditional versioned holds with monotonic fencing tokens prevent conflicting double-assignment of exclusive resources.</p>
+        </article>
+        <article class="invariant-card">
+          <div class="invariant-icon">🌐</div>
+          <h3>Regional Continuity</h3>
+          <p>Local state, maps and deterministic allocation remain available when national services or WAN connectivity is lost.</p>
+        </article>
+        <article class="invariant-card">
+          <div class="invariant-icon">📋</div>
+          <h3>Decision Explainability</h3>
+          <p>Every allocation records candidate exclusions, policy versions, route confidence, facility capacity and operator actions in an immutable audit chain.</p>
+        </article>
+        <article class="invariant-card">
+          <div class="invariant-icon">🚁</div>
+          <h3>Transport-Aware Routing</h3>
+          <p>Air units bypass road closures. Ground vehicles respect hazard matrices. Composite bundles cover multi-capability mass-casualty events.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- Two Column Layout: Incident Lookup + Simulation -->
+    <section class="two-column">
+      <!-- Incident Lookup -->
+      <div class="panel">
+        <h2 class="section-title">
+          <span class="section-icon">🔍</span> Incident Lookup
+        </h2>
+        <div class="form-group">
+          <label for="token">API Token</label>
+          <input id="token" type="password" value="development-only-token" autocomplete="off" placeholder="Bearer token">
+        </div>
+        <div class="form-group">
+          <label for="incident">Incident ID</label>
+          <input id="incident" placeholder="Enter UUID" autocomplete="off">
+        </div>
+        <button id="lookup" class="btn btn-primary">
+          <span class="btn-icon">⚡</span> Load Incident
+        </button>
+        <div class="result-container">
+          <pre id="result" class="result-box">No incident selected.</pre>
+        </div>
+      </div>
+
+      <!-- Disaster Simulation -->
+      <div class="panel">
+        <h2 class="section-title">
+          <span class="section-icon">🧪</span> Disaster Simulation
+        </h2>
+        <p class="simulation-desc">Inject real-time stress events to test reactive auto-reoptimization, facility diversion, and composite resource allocation.</p>
+        <div class="simulation-grid">
+          <button id="sim-incident" class="btn btn-sim btn-sim-incident">
+            <span class="btn-icon">🚨</span> Report P0 Incident
+          </button>
+          <button id="sim-resource" class="btn btn-sim btn-sim-resource">
+            <span class="btn-icon">🚑</span> Register Ambulance
+          </button>
+          <button id="sim-closure" class="btn btn-sim btn-sim-closure">
+            <span class="btn-icon">🚧</span> Trigger Road Closure
+          </button>
+          <button id="sim-hospital" class="btn btn-sim btn-sim-hospital">
+            <span class="btn-icon">🏥</span> Set Hospital Capacity
+          </button>
+          <button id="sim-helicopter" class="btn btn-sim btn-sim-helicopter">
+            <span class="btn-icon">🚁</span> Register Helicopter
+          </button>
+          <button id="sim-mass" class="btn btn-sim btn-sim-mass">
+            <span class="btn-icon">💥</span> Mass-Casualty Event
+          </button>
+        </div>
+        <div class="result-container">
+          <pre id="sim-result" class="result-box">Simulation results will appear here.</pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>Reference operations console — external emergency certification required before production use.</span>
+    <span class="footer-version">Emergency Response Platform v0.1.0</span>
+  </footer>
+
+  <script type="module" src="/console.js"></script>
+</body>
+</html>

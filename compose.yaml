@@ -1,0 +1,82 @@
+name: emergency-platform
+services:
+  api:
+    build: .
+    environment:
+      PORT: 8080
+      HOST: 0.0.0.0
+      REGION_ID: region-a
+      DATABASE_PATH: /var/lib/emergency/emergency.db
+      EMERGENCY_API_TOKEN: ${EMERGENCY_API_TOKEN:?set EMERGENCY_API_TOKEN}
+      COMMAND_SIGNING_KEY: ${COMMAND_SIGNING_KEY:?set COMMAND_SIGNING_KEY}
+      EDGE_SPOOL_KEY_HEX: ${EDGE_SPOOL_KEY_HEX:?set EDGE_SPOOL_KEY_HEX}
+    ports: ["8080:8080"]
+    volumes: ["api-data:/var/lib/emergency"]
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health/ready"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  postgres:
+    image: postgis/postgis:17-3.5-alpine
+    profiles: ["production-dependencies"]
+    environment:
+      POSTGRES_DB: emergency
+      POSTGRES_USER: emergency
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U emergency -d emergency"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    image: apache/kafka:4.1.0
+    profiles: ["production-dependencies"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    volumes: ["kafka-data:/var/lib/kafka/data"]
+
+  redis:
+    image: redis:8-alpine
+    profiles: ["production-dependencies"]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
+    volumes: ["redis-data:/data"]
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.6.4
+    profiles: ["production-dependencies"]
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd-1
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd-1=http://etcd:2380
+    volumes: ["etcd-data:/etcd-data"]
+
+volumes:
+  api-data:
+  postgres-data:
+  kafka-data:
+  redis-data:
+  etcd-data:

@@ -1,0 +1,137 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: emergency-platform
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: emergency-api-config
+  namespace: emergency-platform
+data:
+  PORT: "8080"
+  HOST: "0.0.0.0"
+  REGION_ID: "region-a"
+  DATABASE_PATH: "/var/lib/emergency/emergency.db"
+  P0_QUEUE_CAPACITY: "1024"
+  GENERAL_QUEUE_CAPACITY: "4096"
+  AUTO_ALLOCATE: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emergency-api
+  namespace: emergency-platform
+spec:
+  replicas: 3
+  strategy:
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  selector:
+    matchLabels: {app: emergency-api}
+  template:
+    metadata:
+      labels: {app: emergency-api, criticality: p0}
+    spec:
+      serviceAccountName: emergency-api
+      terminationGracePeriodSeconds: 30
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels: {app: emergency-api}
+      containers:
+        - name: api
+          image: registry.example.invalid/emergency/api:replace-with-signed-digest
+          imagePullPolicy: IfNotPresent
+          ports: [{name: http, containerPort: 8080}]
+          envFrom:
+            - configMapRef: {name: emergency-api-config}
+            - secretRef: {name: emergency-api-secrets}
+          readinessProbe:
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 1
+          resources:
+            requests: {cpu: "2", memory: 1Gi}
+            limits: {cpu: "2", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: runtime, mountPath: /var/lib/emergency}
+      volumes:
+        - name: runtime
+          emptyDir: {sizeLimit: 2Gi}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: emergency-api
+  namespace: emergency-platform
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emergency-api
+  namespace: emergency-platform
+spec:
+  selector: {app: emergency-api}
+  ports: [{name: http, port: 80, targetPort: http}]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: emergency-api
+  namespace: emergency-platform
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: {app: emergency-api}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: emergency-api
+  namespace: emergency-platform
+spec:
+  minReplicas: 3
+  maxReplicas: 30
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: emergency-api}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 50}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: emergency-api-default-deny
+  namespace: emergency-platform
+spec:
+  podSelector: {matchLabels: {app: emergency-api}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {emergency-ingress: "true"}}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {emergency-data: "true"}}
+      ports:
+        - {protocol: TCP, port: 5432}
+        - {protocol: TCP, port: 9092}
+        - {protocol: TCP, port: 2379}
+        - {protocol: TCP, port: 6379}

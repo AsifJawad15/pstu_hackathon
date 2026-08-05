@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package emergency.v1;
+
+import "google/protobuf/timestamp.proto";
+
+message EventMetadata {
+  string event_id = 1;
+  string correlation_id = 2;
+  string causation_id = 3;
+  string idempotency_key = 4;
+  uint32 schema_version = 5;
+  uint64 aggregate_version = 6;
+  string policy_version = 7;
+  string map_version = 8;
+  uint64 resource_epoch = 9;
+  uint64 shard_epoch = 10;
+  google.protobuf.Timestamp source_time = 11;
+  google.protobuf.Timestamp effective_time = 12;
+  google.protobuf.Timestamp expiry_time = 13;
+  string authority = 14;
+  string trace_id = 15;
+  string signature = 16;
+}
+
+message GeoPoint {
+  double latitude = 1;
+  double longitude = 2;
+  string region_id = 3;
+  string spatial_cell = 4;
+  double uncertainty_meters = 5;
+}
+
+message ReportIncidentRequest {
+  EventMetadata metadata = 1;
+  string incident_id = 2;
+  GeoPoint location = 3;
+  string severity = 4;
+  uint32 affected_people = 5;
+  repeated string required_capabilities = 6;
+  repeated string hazards = 7;
+  google.protobuf.Timestamp response_deadline = 8;
+  double confidence = 9;
+  bool auto_allocate = 10;
+  uint32 required_capacity = 11;
+}
+
+message IncidentReceipt {
+  string incident_id = 1;
+  string region_id = 2;
+  uint32 virtual_shard = 3;
+  string status = 4;
+  google.protobuf.Timestamp accepted_at = 5;
+}
+
+message ResourceTelemetry {
+  EventMetadata metadata = 1;
+  string resource_id = 2;
+  GeoPoint location = 3;
+  string resource_type = 4;
+  repeated string capabilities = 5;
+  uint32 capacity = 6;
+  string availability = 7;
+  bool healthy = 8;
+  bool maintenance = 9;
+  uint64 source_sequence = 10;
+}
+
+message DispatchCommand {
+  EventMetadata metadata = 1;
+  string command_id = 2;
+  string assignment_id = 3;
+  string incident_id = 4;
+  string resource_id = 5;
+  string action = 6;
+  uint64 sequence = 7;
+}
+
+message DispatchAcknowledgement {
+  EventMetadata metadata = 1;
+  string command_id = 2;
+  string resource_id = 3;
+  string status = 4;
+  uint64 highest_resource_epoch = 5;
+  uint64 highest_shard_epoch = 6;
+}
+
+service EmergencyPlatform {
+  rpc ReportIncident(ReportIncidentRequest) returns (IncidentReceipt);
+  rpc StreamResourceTelemetry(stream ResourceTelemetry) returns (IncidentReceipt);
+  rpc DispatchAcknowledgement(DispatchAcknowledgement) returns (IncidentReceipt);
+}
