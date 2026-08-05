@@ -1,0 +1,120 @@
+[
+  {
+    "ts": 272.7542262130048,
+    "type": "ASSIGN",
+    "assignment_id": "ASG-0000001",
+    "incident_id": "INC-0000001",
+    "resource_id": "RES-0000001",
+    "cost": -19.06,
+    "tier": "T1_admission",
+    "candidates_considered": 37,
+    "candidates_feasible": 26,
+    "rejected_reasons": {
+      "type_mismatch": 11
+    },
+    "cost_breakdown": {
+      "eta_s": 727.4,
+      "eta_min": 12.12,
+      "urgency": 0.217,
+      "travel_term": -19.06,
+      "lateness_term": 0.0,
+      "overqualification_term": 0.0,
+      "scarcity_term": 0.0,
+      "coverage_term": 0.0,
+      "switching_term": 0.0,
+      "continuity_term": 0.0,
+      "total": -19.06,
+      "slack_min": 41.12
+    },
+    "runner_up_cost": -18.91,
+    "priority_breakdown": {
+      "severity": 9.84915530675933,
+      "scale": 5.452484929698503,
+      "urgency": 5.061868358367138,
+      "vulnerability": 1.33,
+      "hazard": 0.0,
+      "escalation": 0.0,
+      "_total": 21.693508594824973,
+      "_policy_version": "triage-v1.3.0"
+    }
+  },
+  {
+    "ts": 272.7542262130048,
+    "type": "ASSIGN",
+    "assignment_id": "ASG-0000002",
+    "incident_id": "INC-0000001",
+    "resource_id": "RES-0000018",
+    "cost": -18.91,
+    "tier": "T1_admission",
+    "candidates_considered": 37,
+    "candidates_feasible": 26,
+    "rejected_reasons": {
+      "type_mismatch": 11
+    },
+    "cost_breakdown": {
+      "eta_s": 769.7,
+      "eta_min": 12.83,
+      "urgency": 0.217,
+      "travel_term": -18.91,
+      "lateness_term": 0.0,
+      "overqualification_term": 0.0,
+      "scarcity_term": 0.0,
+      "coverage_term": 0.0,
+      "switching_term": 0.0,
+      "continuity_term": 0.0,
+      "total": -18.91,
+      "slack_min": 41.12
+    },
+    "runner_up_cost": -18.91,
+    "priority_breakdown": {
+      "severity": 9.84915530675933,
+      "scale": 5.452484929698503,
+      "urgency": 5.061868358367138,
+      "vulnerability": 1.33,
+      "hazard": 0.0,
+      "escalation": 0.0,
+      "_total": 21.693508594824973,
+      "_policy_version": "triage-v1.3.0"
+    }
+  },
+  {
+    "ts": 345.39312408126546,
+    "type": "ASSIGN",
+    "assignment_id": "ASG-0000003",
+    "incident_id": "INC-0000002",
+    "resource_id": "RES-0000026",
+    "cost": -12.9,
+    "tier": "T1_admission",
+    "candidates_considered": 39,
+    "candidates_feasible": 20,
+    "rejected_reasons": {
+      "type_mismatch": 17,
+      "not_available": 2
+    },
+    "cost_breakdown": {
+      "eta_s": 841.9,
+      "eta_min": 14.03,
+      "urgency": 0.15,
+      "travel_term": -12.9,
+      "lateness_term": 0.0,
+      "overqualification_term": 0.0,
+      "scarcity_term": 0.0,
+      "coverage_term": 0.0,
+      "switching_term": 0.0,
+      "continuity_term": 0.0,
+      "total": -12.9,
+      "slack_min": 63.61
+    },
+    "runner_up_cost": -12.28,
+    "priority_breakdown": {
+      "severity": 0.0,
+      "scale": 1.641361514745063,
+      "urgency": 3.8456001035657392,
+      "vulnerability": 3.27,
+      "hazard": 0.0,
+      "escalation": 0.0,
+      "_total": 8.756961618310802,
+      "_policy_version": "triage-v1.3.0"
+    }
+  }
+]

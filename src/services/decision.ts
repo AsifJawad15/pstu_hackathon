@@ -1,18 +1,21 @@
 import { performance } from "node:perf_hooks";
-import { randomUUID } from "node:crypto";
 import { DEFAULT_POLICY, resourceExclusionReasons, type PolicyBundle } from "../domain/policy.ts";
 import type { CandidateScore, DecisionExplanation, FacilityCandidate, Incident, Resource } from "../domain/types.ts";
 import type { RouteProvider } from "../platform/spatial.ts";
 import { distanceMeters } from "../platform/spatial.ts";
 import type { OperationalDatabase } from "../platform/database.ts";
+import { uuidv7 } from "../platform/ids.ts";
+import type { BundleOptimizer } from "./pythonOptimizer.ts";
 
 export class DecisionEngine {
   readonly #routing: RouteProvider;
   readonly #policy: PolicyBundle;
+  readonly #optimizer: BundleOptimizer | undefined;
 
-  constructor(routing: RouteProvider, policy: PolicyBundle = DEFAULT_POLICY) {
+  constructor(routing: RouteProvider, policy: PolicyBundle = DEFAULT_POLICY, optimizer?: BundleOptimizer) {
     this.#routing = routing;
     this.#policy = policy;
+    this.#optimizer = optimizer;
   }
 
   async decide(incident: Incident, resources: Resource[], deadlineMs = 100, database?: OperationalDatabase): Promise<DecisionExplanation> {
@@ -21,6 +24,16 @@ export class DecisionEngine {
     const prefiltered = [...resources]
       .sort((a, b) => a.resourceId.localeCompare(b.resourceId))
       .slice(0, this.#policy.maxCandidateCount);
+    const dispatchable = prefiltered.filter((resource) => resource.status === "AVAILABLE" && resource.healthy
+      && !resource.maintenance && resource.crewAvailable);
+    const freeByType = new Map<string, number>();
+    const capabilitySupply = new Map<string, number>();
+    for (const resource of dispatchable) {
+      freeByType.set(resource.resourceType, (freeByType.get(resource.resourceType) ?? 0) + 1);
+      for (const capability of new Set(resource.capabilities)) {
+        capabilitySupply.set(capability, (capabilitySupply.get(capability) ?? 0) + 1);
+      }
+    }
 
     const candidates = await Promise.all(prefiltered.map(async (resource): Promise<CandidateScore> => {
       const exclusionReasons = resourceExclusionReasons(incident, resource, Date.now(), this.#policy);
@@ -32,12 +45,19 @@ export class DecisionEngine {
             source: "GEOMETRIC_FALLBACK" as const };
       if (!Number.isFinite(route.etaSeconds)) exclusionReasons.push("ROUTE_UNAVAILABLE");
       if (Date.now() + route.etaSeconds * 1_000 > Date.parse(incident.responseDeadline)) exclusionReasons.push("MISSES_DEADLINE");
-      const scarcity = incident.requiredCapabilities.filter((capability) => resource.capabilities.includes(capability)).length > 1 ? 15 : 2;
+      const required = new Set(incident.requiredCapabilities);
+      const unusedSpecialistCapabilities = resource.capabilities.filter((capability) => !required.has(capability));
+      const scarcity = unusedSpecialistCapabilities.reduce((total, capability) => {
+        const supply = capabilitySupply.get(capability) ?? 1;
+        return total + Math.ceil(12 / Math.max(1, supply));
+      }, 0);
+      const remainingSameType = Math.max(0, (freeByType.get(resource.resourceType) ?? 1) - 1);
+      const coverageLoss = remainingSameType >= 2 ? 0 : (2 - remainingSameType) * 25;
       const components = {
         eta: Math.min(100_000, route.etaSeconds),
         routeRisk: Math.round((1 - route.confidence) * 1_000),
         scarcity,
-        coverageLoss: resource.capabilities.length > 3 ? 20 : 5,
+        coverageLoss,
         handover: 0,
       };
 
@@ -94,7 +114,7 @@ export class DecisionEngine {
     const requiredCapacity = Math.max(1, incident.requiredCapacity ?? 1);
     const requiredCaps = new Set(incident.requiredCapabilities);
     const needsComposite = requiredCapacity > 1 || requiredCaps.size > 1;
-    const chosenResourceIds: string[] = [];
+    let chosenResourceIds: string[] = [];
     let aggregateCapacity = 0;
     const coveredCapabilities = new Set<string>();
 
@@ -114,33 +134,98 @@ export class DecisionEngine {
       }
     }
 
-    const allCapsCovered = [...requiredCaps].every((c) => coveredCapabilities.has(c));
-    const capacitySatisfied = aggregateCapacity >= requiredCapacity;
-    const fullyFeasible = chosenResourceIds.length > 0 && allCapsCovered && capacitySatisfied;
+    let selection = selectionFacts(chosenResourceIds, prefiltered, requiredCaps, requiredCapacity);
+    let optimizerEvidence: DecisionExplanation["optimizerEvidence"];
+    let decisionMode: DecisionExplanation["mode"] = selection.fullyFeasible
+      ? "DETERMINISTIC" : chosenResourceIds.length === 0 ? "NO_FEASIBLE_RESOURCE" : "DETERMINISTIC";
+    if (this.#optimizer?.configured) {
+      const remainingForOptimizer = Math.floor(deadline - performance.now());
+      const usable = candidates.flatMap((candidate) => {
+        const hardExclusions = candidate.exclusionReasons.filter((reason) =>
+          !reason.startsWith("MISSING_CAPABILITY:") && reason !== "INSUFFICIENT_CAPACITY");
+        const resource = prefiltered.find((entry) => entry.resourceId === candidate.resourceId);
+        return hardExclusions.length === 0 && resource ? [{
+          resourceId: resource.resourceId,
+          cost: Math.max(0, Math.round(candidate.score * 100)),
+          capacity: resource.capacity,
+          capabilities: resource.capabilities,
+        }] : [];
+      });
+      if (remainingForOptimizer >= 10 && usable.length > 0) {
+        const outcome = await this.#optimizer.selectBundle({ incident, candidates: usable, deadlineMs: remainingForOptimizer });
+        if (outcome.result?.feasible) {
+          const proposed = selectionFacts(outcome.result.selectedResourceIds, prefiltered, requiredCaps, requiredCapacity);
+          const allowed = new Set(usable.map((candidate) => candidate.resourceId));
+          const authorityAccepted = proposed.valid && proposed.fullyFeasible
+            && outcome.result.selectedResourceIds.every((resourceId) => allowed.has(resourceId));
+          if (authorityAccepted) {
+            chosenResourceIds = [...outcome.result.selectedResourceIds].sort();
+            selection = proposed;
+            decisionMode = outcome.result.optimal ? "EXACT_OPTIMIZED" : "PYTHON_INCUMBENT";
+            optimizerEvidence = {
+              service: "aegis-python-optimizer", solverVersion: outcome.result.solverVersion,
+              algorithm: outcome.result.algorithm,
+              ...(outcome.result.objective === null ? {} : { objective: outcome.result.objective }),
+              optimal: outcome.result.optimal, examinedStates: outcome.result.examinedStates,
+              durationMs: outcome.result.durationMs,
+            };
+          } else {
+            optimizerEvidence = { service: "aegis-python-optimizer", fallbackReason: "OPTIMIZER_PLAN_REJECTED_BY_AUTHORITY" };
+          }
+        } else {
+          optimizerEvidence = { service: "aegis-python-optimizer",
+            fallbackReason: outcome.fallbackReason ?? "OPTIMIZER_RETURNED_NO_FEASIBLE_BUNDLE" };
+        }
+      } else {
+        optimizerEvidence = { service: "aegis-python-optimizer", fallbackReason: "OPTIMIZER_BUDGET_EXHAUSTED" };
+      }
+    }
 
     const reasons: string[] = [];
-    if (fullyFeasible) {
-      reasons.push(chosenResourceIds.length > 1 ? "COMPOSITE_RESOURCE_BUNDLE" : "LOWEST_COST_FEASIBLE_RESOURCE");
+    if (selection.fullyFeasible) {
+      reasons.push(decisionMode === "EXACT_OPTIMIZED" ? "EXACT_MINIMUM_COST_BUNDLE"
+        : decisionMode === "PYTHON_INCUMBENT" ? "DEADLINE_BOUNDED_FEASIBLE_INCUMBENT"
+          : chosenResourceIds.length > 1 ? "COMPOSITE_RESOURCE_BUNDLE" : "LOWEST_COST_FEASIBLE_RESOURCE");
     } else if (chosenResourceIds.length > 0) {
       reasons.push("PARTIAL_ALLOCATION");
-      if (!capacitySatisfied) reasons.push("INSUFFICIENT_AGGREGATE_CAPACITY");
-      if (!allCapsCovered) reasons.push("MISSING_AGGREGATE_CAPABILITIES");
+      if (!selection.capacitySatisfied) reasons.push("INSUFFICIENT_AGGREGATE_CAPACITY");
+      if (!selection.allCapsCovered) reasons.push("MISSING_AGGREGATE_CAPABILITIES");
     } else {
       reasons.push("NO_RESOURCE_SATISFIED_ALL_HARD_CONSTRAINTS");
     }
+    if (optimizerEvidence?.fallbackReason) reasons.push("DETERMINISTIC_OPTIMIZER_FALLBACK");
 
 
     return {
-      decisionId: randomUUID(), incidentId: incident.incidentId,
-      mode: fullyFeasible ? "DETERMINISTIC" : chosenResourceIds.length === 0 ? "NO_FEASIBLE_RESOURCE" : "DETERMINISTIC",
+      decisionId: uuidv7(), incidentId: incident.incidentId,
+      mode: decisionMode,
       policyVersion: this.#policy.version, mapVersion: incident.metadata.mapVersion,
       generatedAt: new Date().toISOString(), deadlineMs,
       durationMs: Math.round((performance.now() - started) * 100) / 100,
       chosenResourceIds, candidates,
       reasons,
       snapshotVersions: Object.fromEntries(prefiltered.map((resource) => [resource.resourceId, resource.version])),
+      ...(optimizerEvidence ? { optimizerEvidence } : {}),
     };
   }
+}
+
+function selectionFacts(ids: string[], resources: Resource[], requiredCaps: Set<string>, requiredCapacity: number): {
+  valid: boolean;
+  aggregateCapacity: number;
+  allCapsCovered: boolean;
+  capacitySatisfied: boolean;
+  fullyFeasible: boolean;
+} {
+  const selectedIds = new Set(ids);
+  const selected = ids.map((id) => resources.find((resource) => resource.resourceId === id));
+  const valid = selectedIds.size === ids.length && selected.every(Boolean);
+  const aggregateCapacity = selected.reduce((sum, resource) => sum + (resource?.capacity ?? 0), 0);
+  const covered = new Set(selected.flatMap((resource) => resource?.capabilities ?? []));
+  const allCapsCovered = [...requiredCaps].every((capability) => covered.has(capability));
+  const capacitySatisfied = aggregateCapacity >= requiredCapacity;
+  return { valid, aggregateCapacity, allCapsCovered, capacitySatisfied,
+    fullyFeasible: valid && ids.length > 0 && allCapsCovered && capacitySatisfied };
 }
 
 export class BoundedOptimizer {
@@ -153,7 +238,7 @@ export class BoundedOptimizer {
     if (current.chosenResourceIds[0] === best.resourceId) return current;
     return {
       ...current,
-      decisionId: randomUUID(), mode: "BOUNDED_IMPROVEMENT", generatedAt: new Date().toISOString(),
+      decisionId: uuidv7(), mode: "BOUNDED_IMPROVEMENT", generatedAt: new Date().toISOString(),
       chosenResourceIds: [best.resourceId], reasons: ["BOUNDED_IMPROVEMENT_EXCEEDED_POLICY_THRESHOLD"],
       durationMs: Math.round((performance.now() - started) * 100) / 100,
     };

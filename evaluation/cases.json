@@ -1,0 +1,9 @@
+{
+  "regionId": "region-a",
+  "latitude": 22.47,
+  "longitude": 91.78,
+  "concurrentClaims": 25,
+  "acceptanceSamples": 30,
+  "acceptanceP99MaxMs": 50,
+  "requestTimeoutMs": 5000
+}

@@ -1,0 +1,33 @@
+groups:
+  - name: emergency-critical-path
+    rules:
+      - alert: P0QueueAgeCritical
+        expr: emergency_p0_oldest_queue_age_seconds > 0.05
+        for: 15s
+        labels: {severity: page, service: emergency-api}
+        annotations:
+          summary: "P0 admission queue age exceeds the regional latency budget"
+      - alert: CriticalIncidentUnassigned
+        expr: emergency_unassigned_incidents{priority="P0"} > 0
+        for: 30s
+        labels: {severity: page, service: allocation}
+        annotations:
+          summary: "At least one P0 incident has no feasible active assignment"
+      - alert: DispatchFallbackUnavailable
+        expr: emergency_dispatch_healthy_channels{priority="P0"} < 2
+        for: 30s
+        labels: {severity: page, service: notification}
+        annotations:
+          summary: "Fewer than two P0 dispatch channels are healthy"
+      - alert: OwnershipConflict
+        expr: emergency_shard_active_owners > 1
+        for: 0s
+        labels: {severity: page, service: shard-control}
+        annotations:
+          summary: "A virtual shard reports multiple active owners"
+      - alert: OutboxOldestEventTooOld
+        expr: emergency_outbox_oldest_unpublished_seconds > 1
+        for: 1m
+        labels: {severity: page, service: event-publisher}
+        annotations:
+          summary: "Transactional outbox delivery is outside its critical budget"

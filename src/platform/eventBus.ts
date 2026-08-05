@@ -33,25 +33,50 @@ export class BoundedEventBus {
 export class OutboxPublisher {
   readonly #database: OperationalDatabase;
   readonly #bus: BoundedEventBus;
+  #active: Promise<{ published: number; failed: number }> | undefined;
 
   constructor(database: OperationalDatabase, bus: BoundedEventBus) {
     this.#database = database;
     this.#bus = bus;
   }
 
-  async flush(limit = 100): Promise<{ published: number; failed: number }> {
-    let published = 0;
+  flush(limit = 100): Promise<{ published: number; failed: number }> {
+    if (this.#active) return this.#active;
+    const active = this.#flush(limit);
+    this.#active = active;
+    void active.then(() => {
+      if (this.#active === active) this.#active = undefined;
+    }, () => {
+      if (this.#active === active) this.#active = undefined;
+    });
+    return active;
+  }
+
+  async #flush(limit: number): Promise<{ published: number; failed: number }> {
+    const publishedIds: string[] = [];
     let failed = 0;
     for (const entry of this.#database.pendingOutbox(limit)) {
       try {
         await this.#bus.publish({ id: entry.id, type: entry.eventType, payload: entry.payload });
-        this.#database.markOutboxPublished(entry.id);
-        published += 1;
+        publishedIds.push(entry.id);
       } catch (error) {
         this.#database.markOutboxFailed(entry.id, error instanceof Error ? error.message : "unknown error");
         failed += 1;
       }
     }
-    return { published, failed };
+    if (publishedIds.length > 0) {
+      try {
+        // A single bounded SQLite update avoids blocking incident intake once
+        // per event while retaining at-least-once replay semantics.
+        this.#database.markOutboxPublishedBatch(publishedIds);
+      } catch (error) {
+        for (const id of publishedIds) {
+          this.#database.markOutboxFailed(id, error instanceof Error ? error.message : "publish acknowledgement failed");
+        }
+        failed += publishedIds.length;
+        return { published: 0, failed };
+      }
+    }
+    return { published: publishedIds.length, failed };
   }
 }

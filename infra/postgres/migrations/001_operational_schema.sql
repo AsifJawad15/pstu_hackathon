@@ -96,12 +96,14 @@ CREATE TABLE IF NOT EXISTS outbox (
   aggregate_id text NOT NULL,
   event_type text NOT NULL,
   payload jsonb NOT NULL,
+  priority smallint NOT NULL DEFAULT 2 CHECK (priority BETWEEN 0 AND 3),
+  deliver_by timestamptz,
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   published_at timestamptz,
   attempt_count integer NOT NULL DEFAULT 0,
   last_error text
 );
-CREATE INDEX IF NOT EXISTS outbox_unpublished_idx ON outbox(created_at) WHERE published_at IS NULL;
+CREATE INDEX IF NOT EXISTS outbox_unpublished_idx ON outbox(priority,created_at) WHERE published_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS processed_events (
   consumer text NOT NULL,
@@ -110,6 +112,60 @@ CREATE TABLE IF NOT EXISTS processed_events (
   PRIMARY KEY(consumer,event_id)
 );
 
+CREATE TABLE IF NOT EXISTS notification_jobs (
+  job_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  notification_id uuid NOT NULL,
+  recipient_id text NOT NULL,
+  channel text NOT NULL,
+  version bigint NOT NULL CHECK (version > 0),
+  priority text NOT NULL CHECK (priority IN ('P0','P1','P2','P3')),
+  payload jsonb NOT NULL,
+  status text NOT NULL CHECK (status IN ('QUEUED','SENDING','ACCEPTED','DELIVERED','ACKNOWLEDGED','FAILED','EXPIRED','CANCELLED')),
+  provider text,
+  expires_at timestamptz NOT NULL,
+  next_retry_at timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  UNIQUE(notification_id,recipient_id,channel,version)
+);
+CREATE INDEX IF NOT EXISTS notification_jobs_ready_idx
+  ON notification_jobs(priority,next_retry_at,updated_at)
+  WHERE status IN ('QUEUED','FAILED');
+
+CREATE TABLE IF NOT EXISTS notification_attempts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  notification_job_id uuid NOT NULL REFERENCES notification_jobs(job_id),
+  recipient_id text NOT NULL,
+  channel text NOT NULL,
+  version bigint NOT NULL,
+  provider text NOT NULL,
+  outcome text NOT NULL,
+  provider_message_id text,
+  error_code text,
+  started_at timestamptz NOT NULL,
+  completed_at timestamptz NOT NULL,
+  next_retry_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS notification_attempts_message_idx
+  ON notification_attempts(provider,provider_message_id) WHERE provider_message_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS provider_status_events (
+  event_id text PRIMARY KEY,
+  provider text NOT NULL,
+  provider_message_id text NOT NULL,
+  status text NOT NULL,
+  occurred_at timestamptz NOT NULL,
+  processed_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE TABLE IF NOT EXISTS integration_events (
+  event_id text PRIMARY KEY,
+  event_type text NOT NULL,
+  region_id text NOT NULL,
+  payload jsonb NOT NULL,
+  received_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS integration_events_region_time_idx ON integration_events(region_id,received_at DESC);
+
 CREATE TABLE IF NOT EXISTS shard_directory (
   region_id text NOT NULL,
   virtual_shard smallint NOT NULL CHECK (virtual_shard BETWEEN 0 AND 255),
@@ -117,6 +173,8 @@ CREATE TABLE IF NOT EXISTS shard_directory (
   standby_owner text NOT NULL,
   ownership_epoch bigint NOT NULL CHECK (ownership_epoch > 0),
   state text NOT NULL CHECK (state IN ('ACTIVE','MOVING','READ_ONLY','FENCED')),
+  lease_expires_at timestamptz,
+  takeover_evidence jsonb,
   replication_watermark pg_lsn,
   updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   PRIMARY KEY(region_id,virtual_shard)
@@ -152,4 +210,3 @@ END;
 $$;
 
 COMMIT;
-

@@ -1,0 +1,6 @@
+# AEGIS reference implementation.
+#
+# The decision core has NO required third-party dependencies: a pure-Python
+# Jonker-Volgenant solver ships in core/matching.py and the test suite asserts
+# it agrees with SciPy. SciPy is used only as a faster path when available.
+scipy>=1.7 ; python_version >= "3.9"   # optional: accelerates the exact matcher

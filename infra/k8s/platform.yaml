@@ -1,3 +1,12 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: emergency-p0-critical
+value: 1000000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: "Critical regional admission and dispatch workloads."
+---
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -33,6 +42,7 @@ spec:
       labels: {app: emergency-api, criticality: p0}
     spec:
       serviceAccountName: emergency-api
+      priorityClassName: emergency-p0-critical
       terminationGracePeriodSeconds: 30
       topologySpreadConstraints:
         - maxSkew: 1
@@ -53,6 +63,10 @@ spec:
             periodSeconds: 2
             timeoutSeconds: 1
             failureThreshold: 2
+          startupProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 1
+            failureThreshold: 30
           livenessProbe:
             httpGet: {path: /health/live, port: http}
             periodSeconds: 5
@@ -114,6 +128,14 @@ spec:
       resource:
         name: cpu
         target: {type: Utilization, averageUtilization: 50}
+    - type: External
+      external:
+        metric: {name: emergency_p0_oldest_queue_age_seconds}
+        target: {type: AverageValue, averageValue: "0.025"}
+    - type: External
+      external:
+        metric: {name: emergency_outbox_unpublished_events}
+        target: {type: AverageValue, averageValue: "100"}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

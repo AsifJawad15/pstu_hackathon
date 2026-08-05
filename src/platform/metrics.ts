@@ -1,6 +1,7 @@
 export class Metrics {
   readonly #counters = new Map<string, number>();
   readonly #durations = new Map<string, number[]>();
+  readonly #gauges = new Map<string, number>();
 
   increment(name: string, labels: Record<string, string> = {}, value = 1): void {
     const key = this.#key(name, labels);
@@ -15,6 +16,10 @@ export class Metrics {
     this.#durations.set(key, values);
   }
 
+  setGauge(name: string, value: number, labels: Record<string, string> = {}): void {
+    this.#gauges.set(this.#key(name, labels), value);
+  }
+
   percentile(name: string, percentile: number): number | undefined {
     const entries = [...this.#durations.entries()].filter(([key]) => key.startsWith(`${name}{`));
     const values = entries.flatMap(([, samples]) => samples).sort((a, b) => a - b);
@@ -25,6 +30,7 @@ export class Metrics {
   prometheus(): string {
     const lines: string[] = [];
     for (const [key, value] of this.#counters) lines.push(`${key} ${value}`);
+    for (const [key, value] of this.#gauges) lines.push(`${key} ${value}`);
     for (const [key, values] of this.#durations) {
       const base = key.replace(/\{/, "_milliseconds{");
       lines.push(`${base.replace("{", "_count{")} ${values.length}`);
@@ -39,4 +45,3 @@ export class Metrics {
     return `${name}{${encoded}}`;
   }
 }
-

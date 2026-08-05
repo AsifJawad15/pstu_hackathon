@@ -1,5 +1,7 @@
 # Emergency Response and Resource Optimisation Platform: Low-Latency, Highly Available Backend Design
 
+> Repository note (reviewed 5 August 2026): this is retained as research input, not as proof of the current implementation. The verified code-to-roadmap reconciliation is maintained in [docs/redesign-reconciliation.md](docs/redesign-reconciliation.md). Non-portable research citation tokens in this file must not be copied into the competition PDF.
+
 ## Executive summary
 
 The PDF asks for a country-wide backend that continuously ingests emergency incidents, prioritises them, assigns ambulances, hospitals, rescue teams, helicopters and emergency-operation centres, and re-optimises assignments as roads, capacity, communications and resource availability change. It explicitly requires near-real-time, explainable and operationally feasible decisions under very high throughput, while remaining scalable, reliable, fault tolerant and maintainable. fileciteturn0file0

@@ -142,7 +142,8 @@ export type CandidateScore = {
 export type DecisionExplanation = {
   decisionId: string;
   incidentId: string;
-  mode: "DETERMINISTIC" | "BOUNDED_IMPROVEMENT" | "NO_FEASIBLE_RESOURCE";
+  mode: "DETERMINISTIC" | "EXACT_OPTIMIZED" | "PYTHON_INCUMBENT" | "BOUNDED_IMPROVEMENT"
+    | "NO_FEASIBLE_RESOURCE" | "RESERVATION_CONTENDED";
   policyVersion: string;
   mapVersion: string;
   generatedAt: string;
@@ -154,6 +155,16 @@ export type DecisionExplanation = {
   snapshotVersions: Record<string, number>;
   facilityReservations?: FacilityReservation[];
   facilityDiversionReason?: string;
+  optimizerEvidence?: {
+    service: "aegis-python-optimizer";
+    solverVersion?: string;
+    algorithm?: string;
+    objective?: number;
+    optimal?: boolean;
+    examinedStates?: number;
+    durationMs?: number;
+    fallbackReason?: string;
+  };
 };
 
 export type Assignment = {

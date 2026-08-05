@@ -13,8 +13,14 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - run: npm ci
       - run: npm run typecheck
       - run: npm run contracts:check
       - run: npm run test:coverage
+      - run: python aegis/tests/test_all.py
+      - run: PYTHONPATH=services/optimizer:aegis/src python -m unittest discover -s services/optimizer/tests -v
       - run: docker build -t emergency-platform:test .
+      - run: docker build -f services/optimizer/Dockerfile -t emergency-optimizer:test .

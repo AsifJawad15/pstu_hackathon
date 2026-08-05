@@ -1,0 +1,15 @@
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Invariant / budget & Baseline & + Triage & + Re-opt & AEGIS \\
+\midrule
+Resource conflicts detected & 0 & 0 & 0 & 0 \\
+Double-booking attempts blocked & 0 & 0 & 0 & 0 \\
+Tier-1 admission p99 (ms) & 1.40 & 1.36 & 2.01 & 2.45 \\
+Tier-2 epoch solve p99 (ms) & nan & nan & 38.70 & 38.53 \\
+Travel-time cache hit rate (\%) & 77.4 & 78.3 & 98.2 & 97.1 \\
+Degraded travel-time estimates served & 66 & 67 & 1,380 & 2,236 \\
+Circuit-breaker trips & 12 & 14 & 30 & 30 \\
+Events dead-lettered & 0 & 0 & 0 & 0 \\
+Stranded leases auto-reclaimed & 0 & 0 & 0 & 0 \\
+\bottomrule
+\end{tabular}

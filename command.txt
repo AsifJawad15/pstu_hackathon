@@ -1,0 +1,90 @@
+$tokenLine = Get-Content .env |
+  Where-Object { $_ -match '^EMERGENCY_API_TOKEN=' }
+
+$apiToken = $tokenLine -replace '^EMERGENCY_API_TOKEN=', ''
+
+$headers = @{
+  Authorization = "Bearer $apiToken"
+  "Content-Type" = "application/json"
+}
+$now = (Get-Date).ToUniversalTime().ToString("o")
+
+$resource = @{
+  resourceId = "ambulance-001"
+  metadata = @{
+    eventId = [guid]::NewGuid().ToString()
+    correlationId = [guid]::NewGuid().ToString()
+    idempotencyKey = "resource-$([guid]::NewGuid())"
+    schemaVersion = 1
+    aggregateVersion = 1
+    policyVersion = "policy-1"
+    mapVersion = "map-1"
+    resourceEpoch = 0
+    shardEpoch = 1
+    sourceTime = $now
+    effectiveTime = $now
+    authority = "regional-eoc"
+    traceId = [guid]::NewGuid().ToString()
+  }
+  location = @{
+    latitude = 22.48
+    longitude = 91.79
+    regionId = "region-a"
+  }
+  resourceType = "AMBULANCE"
+  capabilities = @("ALS")
+  capacity = 1
+  status = "AVAILABLE"
+  healthy = $true
+  maintenance = $false
+  sourceSequence = 1
+  jurisdiction = "region-a"
+  crewAvailable = $true
+}
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8181/v1/resources/telemetry" `
+  -Method Post `
+  -Headers $headers `
+  -Body ($resource | ConvertTo-Json -Depth 10)
+
+$incident = @{
+  metadata = @{
+    eventId = [guid]::NewGuid().ToString()
+    correlationId = [guid]::NewGuid().ToString()
+    idempotencyKey = "incident-$([guid]::NewGuid())"
+    schemaVersion = 1
+    aggregateVersion = 1
+    policyVersion = "policy-1"
+    mapVersion = "map-1"
+    resourceEpoch = 0
+    shardEpoch = 1
+    sourceTime = $now
+    effectiveTime = $now
+    authority = "regional-eoc"
+    traceId = [guid]::NewGuid().ToString()
+  }
+  location = @{
+    latitude = 22.47
+    longitude = 91.78
+    regionId = "region-a"
+  }
+  severity = 9
+  affectedPeople = 1
+  timeToHarmMinutes = 5
+  requiredCapabilities = @("ALS")
+  requiredCapacity = 1
+  hazards = @()
+  confidence = 0.95
+  responseDeadline = (Get-Date).ToUniversalTime().AddMinutes(30).ToString("o")
+  autoAllocate = $true
+}
+
+$result = Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8181/v1/incidents" `
+  -Method Post `
+  -Headers $headers `
+  -Body ($incident | ConvertTo-Json -Depth 10)
+
+$result.incident.incidentId
+$result.incident.incidentId | Set-Clipboard

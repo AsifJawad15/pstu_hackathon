@@ -1,0 +1,15 @@
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Metric & Baseline & + Triage & + Re-opt & AEGIS & \textbf{Change} \\
+\midrule
+Mean first-response time (min) & 45.72 & 42.55 & 36.17 & 39.47 & \textcolor{good}{-13.7\%} \\
+Median first-response (min) & 25.88 & 25.28 & 26.69 & 30.94 & \textcolor{bad}{+19.6\%} \\
+p90 first-response (min) & 128.49 & 100.06 & 72.96 & 78.41 & \textcolor{good}{-39.0\%} \\
+p99 first-response (min) & 208.19 & 205.01 & 146.69 & 155.81 & \textcolor{good}{-25.2\%} \\
+Severity-weighted response (min) & 179.33 & 168.83 & 132.44 & 146.11 & \textcolor{good}{-18.5\%} \\
+Reached within clinical window (\%) & 61.07 & 60.81 & 67.43 & 66.38 & \textcolor{good}{+8.7\%} \\
+Never reached (\%) & 17.24 & 18.97 & 18.07 & 14.08 & \textcolor{good}{-18.3\%} \\
+Fleet utilisation (\%) & 28.97 & 28.70 & 34.61 & 39.65 & \textcolor{good}{+36.9\%} \\
+Assignment churn (\% of commits) & 0.00 & 0.00 & 2.96 & 6.10 & \textcolor{muted}{n/a} \\
+\bottomrule
+\end{tabular}

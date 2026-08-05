@@ -9,6 +9,17 @@ export type AppConfig = {
   p0QueueCapacity: number;
   generalQueueCapacity: number;
   autoAllocate: boolean;
+  productionIntegrations: {
+    postgresUrl?: string;
+    kafkaBrokers: string[];
+    redisUrl?: string;
+    etcdHosts: string[];
+  };
+  optimizer: {
+    url?: string;
+    sharedSecret?: string;
+    deadlineMs: number;
+  };
 };
 
 function positiveInteger(value: string | undefined, fallback: number): number {
@@ -28,5 +39,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     p0QueueCapacity: positiveInteger(env.P0_QUEUE_CAPACITY, 1_024),
     generalQueueCapacity: positiveInteger(env.GENERAL_QUEUE_CAPACITY, 4_096),
     autoAllocate: env.AUTO_ALLOCATE !== "false",
+    productionIntegrations: {
+      ...(env.POSTGRES_URL ? { postgresUrl: env.POSTGRES_URL } : {}),
+      kafkaBrokers: env.KAFKA_BROKERS?.split(",").map((value) => value.trim()).filter(Boolean) ?? [],
+      ...(env.REDIS_URL ? { redisUrl: env.REDIS_URL } : {}),
+      etcdHosts: env.ETCD_ENDPOINTS?.split(",").map((value) => value.trim()).filter(Boolean) ?? [],
+    },
+    optimizer: {
+      ...(env.OPTIMIZER_URL ? { url: env.OPTIMIZER_URL } : {}),
+      ...(env.OPTIMIZER_SHARED_SECRET ? { sharedSecret: env.OPTIMIZER_SHARED_SECRET } : {}),
+      deadlineMs: positiveInteger(env.OPTIMIZER_DEADLINE_MS, 40),
+    },
   };
 }

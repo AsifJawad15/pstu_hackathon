@@ -3,143 +3,199 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Regional Emergency Operations — Mission Control</title>
-  <meta name="description" content="Regional Emergency Operations Mission Control Console for real-time incident management, resource allocation, and disaster response coordination.">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <meta name="theme-color" content="#080a12">
+  <title>Aegis Grid — Regional Emergency Command</title>
+  <meta name="description" content="A fast, explainable regional emergency-response and resource-optimization command console.">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header>
-    <div class="header-left">
-      <span class="logo-mark">ER</span>
-      <div class="header-title">
-        <strong>Regional Emergency Operations</strong>
-        <span class="header-subtitle">Mission Control Console</span>
+  <div class="shell">
+    <aside class="rail" aria-label="Primary navigation">
+      <a class="brand" href="#overview" aria-label="Aegis Grid home">
+        <span class="brand-mark" aria-hidden="true"><i></i><b>AG</b></span>
+        <span><strong>AEGIS GRID</strong><small>REGIONAL COMMAND</small></span>
+      </a>
+      <nav>
+        <a class="active" href="#overview"><span>01</span> Overview</a>
+        <a href="#response-lab"><span>02</span> Response lab</a>
+        <a href="#incidents"><span>03</span> Incidents</a>
+        <a href="#evidence"><span>04</span> Evidence</a>
+        <a href="#infrastructure"><span>05</span> Infrastructure</a>
+      </nav>
+      <div class="rail-status">
+        <div class="signal"><span id="rail-signal"></span> Regional cell</div>
+        <strong id="rail-region">Not connected</strong>
+        <small>Local decisions remain independent of the national layer.</small>
       </div>
-    </div>
-    <div class="header-right">
-      <span id="clock" class="header-clock">--:--:--</span>
-      <span id="health" class="badge neutral">Checking system…</span>
-    </div>
-  </header>
+      <p class="build-label">REFERENCE BUILD · v0.2</p>
+    </aside>
 
-  <main>
-    <!-- KPI Telemetry Strip -->
-    <section class="kpi-strip">
-      <div class="kpi-card">
-        <div class="kpi-label">System Status</div>
-        <div class="kpi-value" id="kpi-status">—</div>
-      </div>
-      <div class="kpi-card kpi-danger-glow" id="kpi-p0-card">
-        <div class="kpi-label">Active P0 Incidents</div>
-        <div class="kpi-value" id="kpi-p0">0</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">HTTP Requests</div>
-        <div class="kpi-value" id="kpi-requests">0</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Decisions Made</div>
-        <div class="kpi-value" id="kpi-decisions">0</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Audit Integrity</div>
-        <div class="kpi-value" id="kpi-audit">—</div>
-      </div>
-    </section>
+    <main>
+      <header class="topbar">
+        <button class="menu-button" id="menu-button" aria-label="Toggle navigation" aria-expanded="false">MENU</button>
+        <div>
+          <p class="eyebrow">Live regional operations</p>
+          <h1>Situation room</h1>
+        </div>
+        <div class="topbar-right">
+          <time id="clock">--:--:--</time>
+          <span id="health" class="status-pill neutral"><i></i> Checking</span>
+        </div>
+      </header>
 
-    <!-- Core Safety Invariants -->
-    <section class="invariants-section">
-      <h2 class="section-title">
-        <span class="section-icon">🛡️</span> Core Safety Invariants
-      </h2>
-      <div class="invariants-grid">
-        <article class="invariant-card">
-          <div class="invariant-icon">🔒</div>
-          <h3>Atomic Resource Holds</h3>
-          <p>Conditional versioned holds with monotonic fencing tokens prevent conflicting double-assignment of exclusive resources.</p>
+      <section class="connection-bar" aria-label="Secure API connection">
+        <div class="connection-copy">
+          <span class="connection-index">SECURE LINK</span>
+          <div><strong>Connect this console</strong><small>Your token stays in this browser tab only.</small></div>
+        </div>
+        <label class="compact-field"><span>API token</span><input id="token" type="password" autocomplete="off" placeholder="Paste EMERGENCY_API_TOKEN"></label>
+        <label class="compact-field region-field"><span>Region</span><input id="region" value="region-a" autocomplete="off"></label>
+        <button id="connect" class="button primary">Connect</button>
+        <span id="connection-message" class="connection-message" role="status">Waiting for credentials</span>
+      </section>
+
+      <section id="overview" class="hero-grid">
+        <article class="command-brief">
+          <div class="hero-gridlines" aria-hidden="true"></div>
+          <p class="eyebrow accent">Adaptive emergency orchestration</p>
+          <h2>First safe response.<br><em>Then continuously improve.</em></h2>
+          <p>Accept events, prioritize harm, reserve exclusive resources, dispatch across channels, and re-optimize when roads, hospitals, or vehicles change.</p>
+          <div class="hero-actions">
+            <a href="#response-lab" class="button primary">Open response lab</a>
+            <a href="#infrastructure" class="button ghost">View resilience</a>
+          </div>
+          <div class="latency-targets">
+            <span><b>≤50 ms</b> Intake p99 target</span>
+            <span><b>≤100 ms</b> Feasible decision</span>
+            <span><b>0</b> Double assignments</span>
+          </div>
         </article>
-        <article class="invariant-card">
-          <div class="invariant-icon">🌐</div>
-          <h3>Regional Continuity</h3>
-          <p>Local state, maps and deterministic allocation remain available when national services or WAN connectivity is lost.</p>
+        <aside class="assurance-stack">
+          <div class="assurance-heading"><span>Critical assurances</span><b id="assurance-count">04 / 04</b></div>
+          <div class="assurance"><i>01</i><div><strong>Conflict safe</strong><small>Atomic holds + fencing epochs</small></div><span>ARMED</span></div>
+          <div class="assurance"><i>02</i><div><strong>Region autonomous</strong><small>WAN-independent hot path</small></div><span>READY</span></div>
+          <div class="assurance"><i>03</i><div><strong>Explainable</strong><small>Reasons + policy snapshots</small></div><span>ON</span></div>
+          <div class="assurance"><i>04</i><div><strong>Fail-soft routing</strong><small>Conservative local fallback</small></div><span>ON</span></div>
+        </aside>
+      </section>
+
+      <section class="metrics" aria-label="Regional operational metrics">
+        <article><span>Active P0</span><strong id="metric-p0">—</strong><small>non-terminal incidents</small></article>
+        <article><span>Resources ready</span><strong id="metric-resources">—</strong><small id="metric-resources-detail">awaiting secure link</small></article>
+        <article><span>Active assignments</span><strong id="metric-assignments">—</strong><small>fenced ownership</small></article>
+        <article><span>Facility headroom</span><strong id="metric-facilities">—</strong><small>available minus reserved</small></article>
+        <article><span>Event backlog</span><strong id="metric-backlog">—</strong><small id="metric-backlog-detail">transactional outbox</small></article>
+      </section>
+
+      <section class="decision-flow" aria-label="Emergency decision flow">
+        <div class="flow-head"><div><p class="eyebrow">Operational decision flow</p><h2>One bounded response loop</h2></div><span>Regional data plane</span></div>
+        <div class="flow-track">
+          <div><b>01</b><strong>Ingest</strong><small>Durable + idempotent</small></div><i></i>
+          <div><b>02</b><strong>Prioritize</strong><small>Harm-aware P0–P3</small></div><i></i>
+          <div><b>03</b><strong>Allocate</strong><small>Feasible-first</small></div><i></i>
+          <div><b>04</b><strong>Reserve</strong><small>Atomic + fenced</small></div><i></i>
+          <div><b>05</b><strong>Dispatch</strong><small>Multi-channel</small></div><i></i>
+          <div><b>06</b><strong>Adapt</strong><small>Bounded re-optimize</small></div>
+        </div>
+      </section>
+
+      <section id="response-lab" class="workspace-grid">
+        <article class="panel response-lab">
+          <div class="panel-head">
+            <div><p class="eyebrow">Interactive operations</p><h2>Response lab</h2><p>Simulate live disruptions and verify how the regional system responds.</p></div>
+            <button id="prepare" class="button secondary">Prepare baseline</button>
+          </div>
+          <div class="scenario-grid">
+            <button data-action="medical"><span class="scenario-code p0">P0</span><strong>Critical medical</strong><small>Prioritize and dispatch ALS</small></button>
+            <button data-action="mass"><span class="scenario-code">MCI</span><strong>Mass casualty</strong><small>Composite capacity allocation</small></button>
+            <button data-action="closure"><span class="scenario-code warn">MAP</span><strong>Road collapse</strong><small>Invalidate ground routes</small></button>
+            <button data-action="hospital"><span class="scenario-code cool">BED</span><strong>Hospital saturation</strong><small>Trigger capacity reaction</small></button>
+            <button data-action="failure"><span class="scenario-code danger">OOS</span><strong>Vehicle failure</strong><small>Remove a live resource</small></button>
+            <button data-action="reoptimize"><span class="scenario-code violet">OPT</span><strong>Re-optimize</strong><small>Explain keep or redirect</small></button>
+          </div>
+          <div class="operation-log">
+            <div class="log-head"><span>Operation timeline</span><button id="clear-log">Clear</button></div>
+            <ol id="activity-log" aria-live="polite"><li class="empty">Connect and prepare a baseline to begin.</li></ol>
+          </div>
         </article>
-        <article class="invariant-card">
-          <div class="invariant-icon">📋</div>
-          <h3>Decision Explainability</h3>
-          <p>Every allocation records candidate exclusions, policy versions, route confidence, facility capacity and operator actions in an immutable audit chain.</p>
+
+        <aside class="panel regional-mesh">
+          <div class="panel-head compact"><div><p class="eyebrow">Schematic view</p><h2>Regional mesh</h2></div><span class="live-label"><i></i> LIVE</span></div>
+          <div class="mesh-map" aria-label="Schematic regional resource map">
+            <div class="rings" aria-hidden="true"></div>
+            <span class="map-label north">N</span>
+            <button class="map-node incident-node" title="Latest incident"><i></i><span>INCIDENT</span></button>
+            <button class="map-node unit-node unit-a" title="Ground resource"><i></i><span>UNIT A</span></button>
+            <button class="map-node unit-node unit-b" title="Air resource"><i></i><span>AIR 1</span></button>
+            <button class="map-node facility-node" title="Regional facility"><i></i><span>FACILITY</span></button>
+            <div class="route route-a"></div><div class="route route-b"></div>
+          </div>
+          <div class="mesh-legend"><span><i class="red"></i> Incident</span><span><i class="cyan"></i> Resource</span><span><i class="violet"></i> Facility</span></div>
+          <div class="coverage-row"><span>Fleet availability</span><strong id="coverage-value">No live data</strong></div>
+        </aside>
+      </section>
+
+      <section id="incidents" class="data-grid">
+        <article class="panel incident-list">
+          <div class="panel-head compact"><div><p class="eyebrow">Live operational state</p><h2>Recent incidents</h2></div><button id="refresh" class="icon-button" aria-label="Refresh incidents">REFRESH</button></div>
+          <div class="table-wrap">
+            <table><thead><tr><th>Priority</th><th>Incident</th><th>State</th><th>Affected</th><th>Accepted</th></tr></thead>
+              <tbody id="incident-table"><tr><td colspan="5" class="empty-cell">Connect to load regional incidents.</td></tr></tbody></table>
+          </div>
         </article>
-        <article class="invariant-card">
-          <div class="invariant-icon">🚁</div>
-          <h3>Transport-Aware Routing</h3>
-          <p>Air units bypass road closures. Ground vehicles respect hazard matrices. Composite bundles cover multi-capability mass-casualty events.</p>
+
+        <article id="evidence" class="panel inspector">
+          <div class="panel-head compact"><div><p class="eyebrow">Decision evidence</p><h2>Incident inspector</h2></div></div>
+          <div class="lookup-row"><input id="incident-id" placeholder="Incident UUID" autocomplete="off"><button id="lookup" class="button secondary">Inspect</button></div>
+          <div id="incident-summary" class="inspector-empty">Select an incident to see priority, assignments, fencing epochs, and decision evidence.</div>
+          <details><summary>Raw API evidence</summary><pre id="raw-result">No evidence loaded.</pre></details>
         </article>
-      </div>
-    </section>
+      </section>
 
-    <!-- Two Column Layout: Incident Lookup + Simulation -->
-    <section class="two-column">
-      <!-- Incident Lookup -->
-      <div class="panel">
-        <h2 class="section-title">
-          <span class="section-icon">🔍</span> Incident Lookup
-        </h2>
-        <div class="form-group">
-          <label for="token">API Token</label>
-          <input id="token" type="password" value="development-only-token" autocomplete="off" placeholder="Bearer token">
+      <section id="infrastructure" class="topology-section">
+        <div class="topology-head">
+          <div>
+            <p class="eyebrow accent">Live production data plane</p>
+            <h2>Resilience topology</h2>
+            <p>These states come from real service connections. Stop a container to demonstrate degradation; the regional safety core retains uncommitted events for recovery.</p>
+          </div>
+          <div class="topology-actions">
+            <span id="topology-mode" class="mode-badge">CONNECT TO INSPECT</span>
+            <button id="flush-outbox" class="button secondary">Retry retained events</button>
+            <a class="button ghost" href="http://127.0.0.1:3000/d/aegis-regional-reliability" target="_blank" rel="noreferrer">Open monitoring</a>
+          </div>
         </div>
-        <div class="form-group">
-          <label for="incident">Incident ID</label>
-          <input id="incident" placeholder="Enter UUID" autocomplete="off">
+        <div class="topology-map" aria-label="Production demonstration component topology">
+          <article class="topology-core">
+            <span>REGIONAL SAFETY CORE</span>
+            <strong>Deterministic API + transactional outbox</strong>
+            <small id="topology-authority">Connect to inspect the active authority</small>
+            <div><b id="topology-overall">UNKNOWN</b><i id="topology-backlog">— retained</i></div>
+          </article>
+          <i class="topology-link" aria-hidden="true"></i>
+          <div class="integration-grid">
+            <article data-integration="postgres"><span>01 · DURABILITY</span><strong>PostgreSQL / PostGIS</strong><small>Replayable operational events</small><b id="integration-postgres">UNKNOWN</b></article>
+            <article data-integration="kafka"><span>02 · BACKBONE</span><strong>Kafka · 3 brokers</strong><small>RF=3 · minimum ISR=2</small><b id="integration-kafka">UNKNOWN</b></article>
+            <article data-integration="redis"><span>03 · SPEED</span><strong>Redis projection</strong><small>Disposable cache · local fallback</small><b id="integration-redis">UNKNOWN</b></article>
+            <article data-integration="etcd"><span>04 · OWNERSHIP</span><strong>etcd · 3 members</strong><small>Regional registration + fencing</small><b id="integration-etcd">UNKNOWN</b></article>
+            <article data-integration="optimizer"><span>05 · INTELLIGENCE</span><strong>Python exact optimizer</strong><small>Bounded bundle solve · safe fallback</small><b id="integration-optimizer">UNKNOWN</b></article>
+          </div>
         </div>
-        <button id="lookup" class="btn btn-primary">
-          <span class="btn-icon">⚡</span> Load Incident
-        </button>
-        <div class="result-container">
-          <pre id="result" class="result-box">No incident selected.</pre>
+        <div class="topology-evidence">
+          <span><b id="topology-published">—</b> externally published events</span>
+          <span><b id="topology-last-published">—</b> last successful publish</span>
+          <span><b>5 s</b> monitoring refresh</span>
+          <span><b>3×</b> Kafka and ownership quorum members</span>
+          <span><b id="optimizer-calls">—</b> exact optimizer calls</span>
         </div>
-      </div>
+      </section>
 
-      <!-- Disaster Simulation -->
-      <div class="panel">
-        <h2 class="section-title">
-          <span class="section-icon">🧪</span> Disaster Simulation
-        </h2>
-        <p class="simulation-desc">Inject real-time stress events to test reactive auto-reoptimization, facility diversion, and composite resource allocation.</p>
-        <div class="simulation-grid">
-          <button id="sim-incident" class="btn btn-sim btn-sim-incident">
-            <span class="btn-icon">🚨</span> Report P0 Incident
-          </button>
-          <button id="sim-resource" class="btn btn-sim btn-sim-resource">
-            <span class="btn-icon">🚑</span> Register Ambulance
-          </button>
-          <button id="sim-closure" class="btn btn-sim btn-sim-closure">
-            <span class="btn-icon">🚧</span> Trigger Road Closure
-          </button>
-          <button id="sim-hospital" class="btn btn-sim btn-sim-hospital">
-            <span class="btn-icon">🏥</span> Set Hospital Capacity
-          </button>
-          <button id="sim-helicopter" class="btn btn-sim btn-sim-helicopter">
-            <span class="btn-icon">🚁</span> Register Helicopter
-          </button>
-          <button id="sim-mass" class="btn btn-sim btn-sim-mass">
-            <span class="btn-icon">💥</span> Mass-Casualty Event
-          </button>
-        </div>
-        <div class="result-container">
-          <pre id="sim-result" class="result-box">Simulation results will appear here.</pre>
-        </div>
-      </div>
-    </section>
-  </main>
-
-  <footer>
-    <span>Reference operations console — external emergency certification required before production use.</span>
-    <span class="footer-version">Emergency Response Platform v0.1.0</span>
-  </footer>
-
+      <footer>
+        <span>Engineering demonstrator · External emergency certification required before operational use.</span>
+      </footer>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script type="module" src="/console.js"></script>
 </body>
 </html>

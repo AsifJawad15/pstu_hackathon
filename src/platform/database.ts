@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -10,6 +10,7 @@ import type {
 } from "../domain/types.ts";
 import { spatialCell } from "./spatial.ts";
 import { virtualShard } from "./sharding.ts";
+import { uuidv7 } from "./ids.ts";
 
 type SqlValue = string | number | bigint | null | Uint8Array;
 type Row = Record<string, SqlValue>;
@@ -122,6 +123,31 @@ export class OperationalDatabase {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS notification_attempts (
+        id TEXT PRIMARY KEY,
+        notification_id TEXT NOT NULL,
+        recipient_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        provider TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        provider_message_id TEXT,
+        error TEXT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        next_retry_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS notification_attempts_retry_idx ON notification_attempts(next_retry_at)
+        WHERE next_retry_at IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS provider_status_events (
+        event_id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        provider_message_id TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        processed_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS warnings (
         id TEXT PRIMARY KEY,
         authority TEXT NOT NULL,
@@ -182,6 +208,17 @@ export class OperationalDatabase {
         PRIMARY KEY(region_id, virtual_shard)
       );
     `);
+    this.ensureColumn("assignments", "facility_id", "TEXT");
+    this.ensureColumn("assignments", "facility_capability", "TEXT");
+    this.db.exec("PRAGMA user_version=2");
+  }
+
+  private ensureColumn(table: string, column: string, definition: string): void {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Row[];
+    if (columns.some((entry) => String(entry.name) === column)) return;
+    // Identifiers and definitions are internal migration constants, never
+    // request data. SQLite does not support parameters in ALTER TABLE syntax.
+    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 
   acceptIncident(incident: Incident): { incident: Incident; duplicate: boolean } {
@@ -326,9 +363,9 @@ export class OperationalDatabase {
         `).run(now, JSON.stringify(nextResource), request.resourceId, request.expectedVersion);
         if (Number(held.changes) !== 1) throw new AppError("RESOURCE_CONFLICT", `Resource ${request.resourceId} is no longer available`, 409);
         const assignment: Assignment = {
-          assignmentId: randomUUID(), incidentId, resourceId: request.resourceId, status: "HELD",
+          assignmentId: uuidv7(), incidentId, resourceId: request.resourceId, status: "HELD",
           resourceEpoch: nextEpoch, shardEpoch, resourceVersion: current.version + 1,
-          commandId: randomUUID(), createdAt: now, updatedAt: now,
+          commandId: uuidv7(), createdAt: now, updatedAt: now,
           ...(request.facilityId ? { facilityId: request.facilityId } : {}),
           ...(request.facilityCapability ? { facilityCapability: request.facilityCapability } : {}),
         };
@@ -390,8 +427,28 @@ export class OperationalDatabase {
       .map(rowToAssignment);
   }
 
+  recoverInterruptedAllocations(): string[] {
+    const rows = this.db.prepare(`SELECT i.id FROM incidents i
+      WHERE i.status='ALLOCATING' AND NOT EXISTS (
+        SELECT 1 FROM assignments a WHERE a.incident_id=i.id
+          AND a.status IN ('HELD','DISPATCHED','ACCEPTED','EN_ROUTE','ARRIVED','NEED_ASSISTANCE')
+      ) ORDER BY i.accepted_at`).all() as Row[];
+    const recovered: string[] = [];
+    for (const row of rows) {
+      const incidentId = String(row.id);
+      const incident = this.getIncident(incidentId);
+      if (!incident || incident.status !== "ALLOCATING") continue;
+      this.transitionIncident(incidentId, incident.version, "TRIAGED");
+      this.appendAudit("startup-recovery", "INTERRUPTED_ALLOCATION_RECOVERED", incidentId, {
+        previousStatus: "ALLOCATING", recoveredStatus: "TRIAGED",
+      });
+      recovered.push(incidentId);
+    }
+    return recovered;
+  }
+
   addOutbox(aggregateType: string, aggregateId: string, eventType: string, payload: unknown): string {
-    const id = randomUUID();
+    const id = uuidv7();
     this.db.prepare(`INSERT INTO outbox(id,aggregate_type,aggregate_id,event_type,payload_json,created_at)
       VALUES(?,?,?,?,?,?)`).run(id, aggregateType, aggregateId, eventType, JSON.stringify(payload), new Date().toISOString());
     return id;
@@ -404,8 +461,14 @@ export class OperationalDatabase {
   }
 
   markOutboxPublished(id: string): void {
-    this.db.prepare("UPDATE outbox SET published_at=?,attempt_count=attempt_count+1,last_error=NULL WHERE id=?")
-      .run(new Date().toISOString(), id);
+    this.markOutboxPublishedBatch([id]);
+  }
+
+  markOutboxPublishedBatch(ids: string[]): void {
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => "?").join(",");
+    this.db.prepare(`UPDATE outbox SET published_at=?,attempt_count=attempt_count+1,last_error=NULL
+      WHERE id IN (${placeholders})`).run(new Date().toISOString(), ...ids);
   }
 
   markOutboxFailed(id: string, error: string): void {
@@ -447,6 +510,60 @@ export class OperationalDatabase {
     return Number(result.changes) === 1;
   }
 
+  recordNotificationAttempt(
+    request: { notificationId: string; recipientId: string; channel: string; version: number },
+    provider: string, outcome: string, startedAt: string,
+    details: { providerMessageId?: string; error?: string; nextRetryAt?: string } = {},
+  ): string {
+    const id = uuidv7();
+    this.db.prepare(`INSERT INTO notification_attempts
+      (id,notification_id,recipient_id,channel,version,provider,outcome,provider_message_id,error,started_at,completed_at,next_retry_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      id, request.notificationId, request.recipientId, request.channel, request.version, provider, outcome,
+      details.providerMessageId ?? null, details.error?.slice(0, 500) ?? null, startedAt, new Date().toISOString(),
+      details.nextRetryAt ?? null,
+    );
+    return id;
+  }
+
+  applyProviderNotificationStatus(input: {
+    eventId: string; notificationId: string; recipientId: string; channel: string; version: number;
+    provider: string; providerMessageId: string; status: NotificationStatus; occurredAt: string;
+  }): { applied: boolean; status: NotificationStatus } {
+    const key = `${input.notificationId}:${input.recipientId}:${input.channel}:${input.version}`;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const duplicate = this.db.prepare(`INSERT OR IGNORE INTO provider_status_events
+        (event_id,provider,provider_message_id,occurred_at,processed_at) VALUES(?,?,?,?,?)`).run(
+        input.eventId, input.provider, input.providerMessageId, input.occurredAt, new Date().toISOString(),
+      );
+      const row = this.db.prepare("SELECT status,provider FROM notifications WHERE dedup_key=?").get(key) as Row | undefined;
+      if (!row) throw new AppError("NOTIFICATION_NOT_FOUND", "Notification does not exist", 404);
+      const current = String(row.status) as NotificationStatus;
+      const activeProvider = row.provider ? String(row.provider) : undefined;
+      const activeAttempt = this.db.prepare(`SELECT provider_message_id FROM notification_attempts
+        WHERE notification_id=? AND recipient_id=? AND channel=? AND version=? AND provider=?
+          AND outcome IN ('ACCEPTED','RECONCILED')
+        ORDER BY completed_at DESC LIMIT 1`).get(
+        input.notificationId, input.recipientId, input.channel, input.version, input.provider,
+      ) as Row | undefined;
+      const activeMessageId = activeAttempt?.provider_message_id ? String(activeAttempt.provider_message_id) : undefined;
+      const callbackMatchesActiveDelivery = (!activeProvider || activeProvider === input.provider)
+        && (!activeMessageId || activeMessageId === input.providerMessageId);
+      if (Number(duplicate.changes) === 0 || !callbackMatchesActiveDelivery || !isForwardNotificationStatus(current, input.status)) {
+        this.db.exec("COMMIT");
+        return { applied: false, status: current };
+      }
+      this.db.prepare("UPDATE notifications SET status=?,provider=?,updated_at=? WHERE dedup_key=?")
+        .run(input.status, input.provider, new Date().toISOString(), key);
+      this.db.exec("COMMIT");
+      return { applied: true, status: input.status };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   updateFacilityCapacity(input: {
     facilityId: string; capability: string; regionId: string; available: number; reserved: number; sourceSequence: number;
   }): boolean {
@@ -464,13 +581,28 @@ export class OperationalDatabase {
 
   addEnvironmentEvent(input: {
     eventId: string; regionId: string; eventType: string; payload: unknown; mapVersion: string; effectiveAt: string; expiresAt: string;
+    closedCells?: string[];
   }): boolean {
     const result = this.db.prepare(`INSERT OR IGNORE INTO environment_state
       (event_id,region_id,event_type,payload_json,map_version,effective_at,expires_at) VALUES(?,?,?,?,?,?,?)`).run(
-      input.eventId, input.regionId, input.eventType, JSON.stringify(input.payload), input.mapVersion, input.effectiveAt, input.expiresAt,
+      input.eventId, input.regionId, input.eventType,
+      JSON.stringify({ payload: input.payload, closedCells: input.closedCells ?? [] }),
+      input.mapVersion, input.effectiveAt, input.expiresAt,
     );
     if (Number(result.changes) === 1) this.addOutbox("ENVIRONMENT", input.eventId, "EnvironmentUpdated", input);
     return Number(result.changes) === 1;
+  }
+
+  latestActiveEnvironment(regionId: string, now = new Date().toISOString()): {
+    mapVersion: string; expiresAt: string; closedCells: string[];
+  } | undefined {
+    const row = this.db.prepare(`SELECT payload_json,map_version,expires_at FROM environment_state
+      WHERE region_id=? AND expires_at>? ORDER BY effective_at DESC LIMIT 1`).get(regionId, now) as Row | undefined;
+    if (!row) return undefined;
+    const stored = json<{ closedCells?: unknown }>(row.payload_json!);
+    const closedCells = Array.isArray(stored.closedCells)
+      ? stored.closedCells.filter((cell): cell is string => typeof cell === "string") : [];
+    return { mapVersion: String(row.map_version), expiresAt: String(row.expires_at), closedCells };
   }
 
   createWarning(input: PublicWarningInput, warningId: string): void {
@@ -482,7 +614,7 @@ export class OperationalDatabase {
   appendAudit(actor: string, action: string, targetId: string, payload: unknown): string {
     const previous = this.db.prepare("SELECT record_hash FROM audit_log ORDER BY sequence DESC LIMIT 1").get() as Row | undefined;
     const previousHash = previous ? String(previous.record_hash) : "GENESIS";
-    const eventId = randomUUID();
+    const eventId = uuidv7();
     const createdAt = new Date().toISOString();
     const body = JSON.stringify({ eventId, actor, action, targetId, payload, previousHash, createdAt });
     const recordHash = sha256(body);
@@ -555,6 +687,63 @@ export class OperationalDatabase {
       resourceId: String(row.resource_id), status: String(row.status),
     }));
   }
+
+  operationalSnapshot(regionId: string): {
+    regionId: string;
+    incidents: { total: number; p0Active: number; byPriority: Record<string, number>; byStatus: Record<string, number> };
+    resources: { total: number; available: number; byStatus: Record<string, number> };
+    assignments: { active: number };
+    facilities: { available: number; reserved: number };
+    eventBacklog: { pending: number; oldestAgeSeconds: number };
+    recentIncidents: Array<{ incidentId: string; priority: string; status: string; acceptedAt: string; affectedPeople: number; location: unknown }>;
+  } {
+    const incidentGroups = this.db.prepare(
+      "SELECT priority,status,count(*) AS count FROM incidents WHERE region_id=? GROUP BY priority,status"
+    ).all(regionId) as Row[];
+    const resourceGroups = this.db.prepare(
+      "SELECT status,count(*) AS count FROM resources WHERE region_id=? GROUP BY status"
+    ).all(regionId) as Row[];
+    const byPriority: Record<string, number> = {};
+    const byStatus: Record<string, number> = {};
+    for (const row of incidentGroups) {
+      const count = Number(row.count);
+      byPriority[String(row.priority)] = (byPriority[String(row.priority)] ?? 0) + count;
+      byStatus[String(row.status)] = (byStatus[String(row.status)] ?? 0) + count;
+    }
+    const resourceByStatus: Record<string, number> = {};
+    for (const row of resourceGroups) resourceByStatus[String(row.status)] = Number(row.count);
+    const active = this.db.prepare(`SELECT count(*) AS count FROM assignments a JOIN incidents i ON i.id=a.incident_id
+      WHERE i.region_id=? AND a.status IN ('HELD','DISPATCHED','ACCEPTED','EN_ROUTE','ARRIVED','NEED_ASSISTANCE')`).get(regionId) as Row;
+    const facility = this.db.prepare(
+      "SELECT coalesce(sum(available),0) AS available,coalesce(sum(reserved),0) AS reserved FROM facility_capacity WHERE region_id=?"
+    ).get(regionId) as Row;
+    const backlog = this.db.prepare(
+      "SELECT count(*) AS count,min(created_at) AS oldest FROM outbox WHERE published_at IS NULL"
+    ).get() as Row;
+    const pendingBacklog = Number(backlog.count);
+    const oldest = backlog.oldest ? Date.parse(String(backlog.oldest)) : Date.now();
+    const recentIncidents = (this.db.prepare(`SELECT id,priority,status,accepted_at,payload_json FROM incidents
+      WHERE region_id=? ORDER BY accepted_at DESC LIMIT 8`).all(regionId) as Row[]).map((row) => {
+      const payload = json<Incident>(row.payload_json!);
+      return { incidentId: String(row.id), priority: String(row.priority), status: String(row.status),
+        acceptedAt: String(row.accepted_at), affectedPeople: payload.affectedPeople, location: payload.location };
+    });
+    const totalIncidents = Object.values(byPriority).reduce((sum, count) => sum + count, 0);
+    const terminal = new Set(["RESOLVED", "CANCELLED"]);
+    const p0Active = incidentGroups.filter((row) => String(row.priority) === "P0" && !terminal.has(String(row.status)))
+      .reduce((sum, row) => sum + Number(row.count), 0);
+    return {
+      regionId,
+      incidents: { total: totalIncidents, p0Active, byPriority, byStatus },
+      resources: { total: Object.values(resourceByStatus).reduce((sum, count) => sum + count, 0),
+        available: resourceByStatus.AVAILABLE ?? 0, byStatus: resourceByStatus },
+      assignments: { active: Number(active.count) },
+      facilities: { available: Number(facility.available), reserved: Number(facility.reserved) },
+      eventBacklog: { pending: pendingBacklog,
+        oldestAgeSeconds: pendingBacklog === 0 ? 0 : Math.max(0, (Date.now() - oldest) / 1_000) },
+      recentIncidents,
+    };
+  }
 }
 
 function rowToAssignment(row: Row): Assignment {
@@ -582,4 +771,15 @@ function resourceStatusForAssignment(status: AssignmentStatus, current: Resource
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function isForwardNotificationStatus(current: NotificationStatus, next: NotificationStatus): boolean {
+  if (current === next) return false;
+  if (current === "CANCELLED" || current === "EXPIRED" || current === "ACKNOWLEDGED") return false;
+  if (next === "CANCELLED" || next === "EXPIRED") return true;
+  if (current === "DELIVERED") return next === "ACKNOWLEDGED";
+  if (current === "ACCEPTED") return ["FAILED", "DELIVERED", "ACKNOWLEDGED"].includes(next);
+  if (current === "FAILED") return ["ACCEPTED", "DELIVERED", "ACKNOWLEDGED"].includes(next);
+  if (current === "SENDING") return !["QUEUED", "SENDING"].includes(next);
+  return current === "QUEUED" && next !== "QUEUED";
 }

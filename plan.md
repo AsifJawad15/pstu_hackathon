@@ -13,6 +13,12 @@ Build a hybrid-sovereign, country-wide emergency response platform as ten sequen
 - Material-change re-optimization p99 at or below 500 ms.
 - Regional continuity during national-layer or WAN failure.
 
+## Implementation decisions from the repository review
+
+The August 2026 senior-engineering review keeps PostgreSQL as the single operational authority: an incident is acknowledged after its regional database transaction commits, and the transactional outbox publishes the event without introducing a broker/database dual-write. The 256 shards are virtual routing units; the first production cell uses one synchronously replicated regional PostgreSQL cluster and adds physical database shards only when measured lock, storage or connection limits justify them. Durable entity identifiers are UUIDv7 for index locality. Provider calls remain outside intake transactions and use per-provider circuit breakers, immediate alternate-provider fallback, deadline-aware full-jitter retry planning, unknown-result reconciliation, and monotonic idempotent callbacks.
+
+The aggressive latency figures below are regional internal budgets under controlled load. Carrier delivery and human acknowledgement have separately measured percentile objectives and cannot inherit a hard end-to-end guarantee from the backend.
+
 ## Project initialization — not a stage
 
 Create a monorepo containing backend services, versioned contracts, operator console, infrastructure definitions, simulation tools, tests, and architecture documentation. Establish reproducible local and container builds, database migrations, fixtures, static analysis, dependency locking, CI, SBOM generation, signed artifacts, feature flags, bounded inputs and queues, explicit deadlines, idempotent handlers, structured errors, and cancellation propagation. Initialization passes when the skeleton starts, health checks work, migrations and contracts validate, and CI passes.
@@ -74,4 +80,3 @@ The competition package derives from this evidence: a registration-ID PDF abstra
 - Public-network human acknowledgement is measured but not guaranteed.
 - Public warnings require explicit emergency-authority approval.
 - Code completion never passes a stage without tests, operating evidence, and documentation.
-

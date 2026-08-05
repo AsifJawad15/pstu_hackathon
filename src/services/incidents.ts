@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
 import { calculatePriority, DEFAULT_POLICY, validateIncident, type PolicyBundle } from "../domain/policy.ts";
 import type { Incident, IncidentInput } from "../domain/types.ts";
 import type { OperationalDatabase } from "../platform/database.ts";
+import { uuidv7 } from "../platform/ids.ts";
 import type { EncryptedEdgeSpool } from "../platform/edgeSpool.ts";
 import type { AdmissionController } from "../platform/priorityQueue.ts";
 import { virtualShard } from "../platform/sharding.ts";
@@ -33,7 +33,7 @@ export class IncidentService {
     validateIncident(input);
     const priority = calculatePriority(input, this.#policy);
     const release = this.#admission.enter(priority.priority);
-    const incidentId = input.incidentId ?? randomUUID();
+    const incidentId = input.incidentId ?? uuidv7();
     const incident: Incident = {
       ...input, incidentId, priority: priority.priority, priorityScore: priority.score,
       status: "REPORTED", version: 1, virtualShard: virtualShard(input.location.regionId, incidentId),

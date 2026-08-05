@@ -4,6 +4,8 @@ All `/v1` endpoints require `Authorization: Bearer <token>`. Production replaces
 
 | Method | Path | Purpose |
 |---|---|---|
+| GET | `/v1/system/snapshot` | Retrieve regional incident, resource, assignment, facility and event-backlog summary |
+| GET | `/v1/platform/topology` | Retrieve live PostgreSQL, Kafka, Redis and etcd integration state |
 | POST | `/v1/incidents` | Validate, durably accept and optionally allocate an incident |
 | POST | `/v1/incidents/{id}/update` | Versioned update of incident facts |
 | POST | `/v1/incidents/{id}/cancel` | Audited cancellation |

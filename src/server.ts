@@ -4,6 +4,7 @@ import { createHttpServer } from "./http.ts";
 
 const config = loadConfig();
 const app = new EmergencyApplication(config);
+await app.start();
 const server = createHttpServer(app);
 
 server.on("error", (error: NodeJS.ErrnoException) => {
@@ -29,7 +30,8 @@ server.listen(config.port, config.host, () => {
 
 function shutdown(signal: string): void {
   process.stdout.write(JSON.stringify({ level: "info", event: "server_stopping", signal }) + "\n");
-  server.close(() => {
+  server.close(async () => {
+    await app.shutdown();
     app.close();
     process.exit(0);
   });

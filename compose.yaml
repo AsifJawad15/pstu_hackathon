@@ -1,4 +1,40 @@
-name: emergency-platform
+name: aegis-grid-production-demo
+
+x-kafka-common: &kafka-common
+  image: apache/kafka:4.1.0
+  restart: unless-stopped
+  environment: &kafka-environment
+    KAFKA_PROCESS_ROLES: broker,controller
+    KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+    KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+    KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+    KAFKA_MIN_INSYNC_REPLICAS: 2
+    KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    KAFKA_CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+  healthcheck:
+    test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list >/dev/null 2>&1"]
+    interval: 10s
+    timeout: 5s
+    retries: 18
+    start_period: 25s
+  security_opt: ["no-new-privileges:true"]
+
+x-etcd-common: &etcd-common
+  image: quay.io/coreos/etcd:v3.6.4
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "/usr/local/bin/etcdctl", "--endpoints=http://127.0.0.1:2379", "endpoint", "health"]
+    interval: 8s
+    timeout: 4s
+    retries: 15
+    start_period: 10s
+  security_opt: ["no-new-privileges:true"]
+
 services:
   api:
     build: .
@@ -7,76 +43,205 @@ services:
       HOST: 0.0.0.0
       REGION_ID: region-a
       DATABASE_PATH: /var/lib/emergency/emergency.db
-      EMERGENCY_API_TOKEN: ${EMERGENCY_API_TOKEN:?set EMERGENCY_API_TOKEN}
-      COMMAND_SIGNING_KEY: ${COMMAND_SIGNING_KEY:?set COMMAND_SIGNING_KEY}
-      EDGE_SPOOL_KEY_HEX: ${EDGE_SPOOL_KEY_HEX:?set EDGE_SPOOL_KEY_HEX}
-    ports: ["8080:8080"]
+      EMERGENCY_API_TOKEN: ${EMERGENCY_API_TOKEN:?run npm run secrets:rotate}
+      COMMAND_SIGNING_KEY: ${COMMAND_SIGNING_KEY:?run npm run secrets:rotate}
+      EDGE_SPOOL_KEY_HEX: ${EDGE_SPOOL_KEY_HEX:?run npm run secrets:rotate}
+      POSTGRES_URL: postgresql://emergency:${POSTGRES_PASSWORD:?run npm run secrets:rotate}@postgres:5432/emergency
+      KAFKA_BROKERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      REDIS_URL: redis://redis:6379
+      ETCD_ENDPOINTS: http://etcd-1:2379,http://etcd-2:2379,http://etcd-3:2379
+      OPTIMIZER_URL: http://optimizer:8090
+      OPTIMIZER_SHARED_SECRET: ${OPTIMIZER_SHARED_SECRET:?run npm run secrets:rotate}
+      OPTIMIZER_DEADLINE_MS: 40
+      KAFKAJS_NO_PARTITIONER_WARNING: "1"
+      P0_QUEUE_CAPACITY: 1024
+      GENERAL_QUEUE_CAPACITY: 4096
+      AUTO_ALLOCATE: "true"
+    ports: ["8181:8080"]
     volumes: ["api-data:/var/lib/emergency"]
     read_only: true
     tmpfs: ["/tmp"]
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      etcd-1: { condition: service_healthy }
+      etcd-2: { condition: service_healthy }
+      etcd-3: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health/ready"]
       interval: 5s
-      timeout: 2s
-      retries: 5
+      timeout: 3s
+      retries: 12
+      start_period: 10s
 
   postgres:
     image: postgis/postgis:17-3.5-alpine
-    profiles: ["production-dependencies"]
     environment:
       POSTGRES_DB: emergency
       POSTGRES_USER: emergency
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run npm run secrets:rotate}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres/migrations:/docker-entrypoint-initdb.d:ro
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U emergency -d emergency"]
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 15
+      start_period: 15s
+    security_opt: ["no-new-privileges:true"]
 
-  kafka:
-    image: apache/kafka:4.1.0
-    profiles: ["production-dependencies"]
+  optimizer:
+    build:
+      context: .
+      dockerfile: services/optimizer/Dockerfile
     environment:
+      HOST: 0.0.0.0
+      PORT: 8090
+      OPTIMIZER_SHARED_SECRET: ${OPTIMIZER_SHARED_SECRET:?run npm run secrets:rotate}
+      OPTIMIZER_MAX_CONCURRENCY: 16
+    read_only: true
+    tmpfs: ["/tmp"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    security_opt: ["no-new-privileges:true"]
+
+  kafka-1:
+    <<: *kafka-common
+    environment:
+      <<: *kafka-environment
       KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-    volumes: ["kafka-data:/var/lib/kafka/data"]
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092
+    volumes: ["kafka-1-data:/var/lib/kafka/data"]
+
+  kafka-2:
+    <<: *kafka-common
+    environment:
+      <<: *kafka-environment
+      KAFKA_NODE_ID: 2
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9092
+    volumes: ["kafka-2-data:/var/lib/kafka/data"]
+
+  kafka-3:
+    <<: *kafka-common
+    environment:
+      <<: *kafka-environment
+      KAFKA_NODE_ID: 3
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9092
+    volumes: ["kafka-3-data:/var/lib/kafka/data"]
+
+  kafka-init:
+    image: apache/kafka:4.1.0
+    restart: "no"
+    depends_on:
+      kafka-1: { condition: service_healthy }
+      kafka-2: { condition: service_healthy }
+      kafka-3: { condition: service_healthy }
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - >-
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092 --create --if-not-exists --topic emergency.critical.v1 --partitions 12 --replication-factor 3 --config min.insync.replicas=2;
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092 --create --if-not-exists --topic emergency.operational.v1 --partitions 12 --replication-factor 3 --config min.insync.replicas=2;
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092 --create --if-not-exists --topic emergency.telemetry.v1 --partitions 24 --replication-factor 3 --config min.insync.replicas=2;
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092 --create --if-not-exists --topic emergency.dlq.v1 --partitions 6 --replication-factor 3 --config min.insync.replicas=2
 
   redis:
     image: redis:8-alpine
-    profiles: ["production-dependencies"]
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     volumes: ["redis-data:/data"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    security_opt: ["no-new-privileges:true"]
 
-  etcd:
-    image: quay.io/coreos/etcd:v3.6.4
-    profiles: ["production-dependencies"]
-    command:
-      - /usr/local/bin/etcd
-      - --name=etcd-1
-      - --data-dir=/etcd-data
-      - --listen-client-urls=http://0.0.0.0:2379
-      - --advertise-client-urls=http://etcd:2379
-      - --listen-peer-urls=http://0.0.0.0:2380
-      - --initial-advertise-peer-urls=http://etcd:2380
-      - --initial-cluster=etcd-1=http://etcd:2380
-    volumes: ["etcd-data:/etcd-data"]
+  etcd-1:
+    <<: *etcd-common
+    command: ["/usr/local/bin/etcd", "--name=etcd-1", "--data-dir=/etcd-data", "--listen-client-urls=http://0.0.0.0:2379", "--advertise-client-urls=http://etcd-1:2379", "--listen-peer-urls=http://0.0.0.0:2380", "--initial-advertise-peer-urls=http://etcd-1:2380", "--initial-cluster=etcd-1=http://etcd-1:2380,etcd-2=http://etcd-2:2380,etcd-3=http://etcd-3:2380", "--initial-cluster-state=new", "--initial-cluster-token=aegis-grid"]
+    volumes: ["etcd-1-data:/etcd-data"]
+
+  etcd-2:
+    <<: *etcd-common
+    command: ["/usr/local/bin/etcd", "--name=etcd-2", "--data-dir=/etcd-data", "--listen-client-urls=http://0.0.0.0:2379", "--advertise-client-urls=http://etcd-2:2379", "--listen-peer-urls=http://0.0.0.0:2380", "--initial-advertise-peer-urls=http://etcd-2:2380", "--initial-cluster=etcd-1=http://etcd-1:2380,etcd-2=http://etcd-2:2380,etcd-3=http://etcd-3:2380", "--initial-cluster-state=new", "--initial-cluster-token=aegis-grid"]
+    volumes: ["etcd-2-data:/etcd-data"]
+
+  etcd-3:
+    <<: *etcd-common
+    command: ["/usr/local/bin/etcd", "--name=etcd-3", "--data-dir=/etcd-data", "--listen-client-urls=http://0.0.0.0:2379", "--advertise-client-urls=http://etcd-3:2379", "--listen-peer-urls=http://0.0.0.0:2380", "--initial-advertise-peer-urls=http://etcd-3:2380", "--initial-cluster=etcd-1=http://etcd-1:2380,etcd-2=http://etcd-2:2380,etcd-3=http://etcd-3:2380", "--initial-cluster-state=new", "--initial-cluster-token=aegis-grid"]
+    volumes: ["etcd-3-data:/etcd-data"]
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=7d"]
+    volumes:
+      - ./infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/observability/slo-rules.yaml:/etc/prometheus/slo-rules.yaml:ro
+      - prometheus-data:/prometheus
+    ports: ["9090:9090"]
+    restart: unless-stopped
+    depends_on:
+      api: { condition: service_healthy }
+      optimizer: { condition: service_healthy }
+    security_opt: ["no-new-privileges:true"]
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?run npm run secrets:rotate}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    restart: unless-stopped
+    depends_on: [prometheus]
+    security_opt: ["no-new-privileges:true"]
+
+  smoke:
+    build: .
+    profiles: ["tools"]
+    environment:
+      API_BASE_URL: http://api:8080
+      EMERGENCY_API_TOKEN: ${EMERGENCY_API_TOKEN:?run npm run secrets:rotate}
+      POSTGRES_URL: postgresql://emergency:${POSTGRES_PASSWORD:?run npm run secrets:rotate}@postgres:5432/emergency
+      KAFKA_BROKERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      REDIS_URL: redis://redis:6379
+      ETCD_ENDPOINTS: http://etcd-1:2379,http://etcd-2:2379,http://etcd-3:2379
+      NODE_NO_WARNINGS: "1"
+    command: ["node", "scripts/production-smoke.ts"]
+    depends_on:
+      api: { condition: service_healthy }
+      optimizer: { condition: service_healthy }
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
 
 volumes:
   api-data:
   postgres-data:
-  kafka-data:
+  kafka-1-data:
+  kafka-2-data:
+  kafka-3-data:
   redis-data:
-  etcd-data:
+  etcd-1-data:
+  etcd-2-data:
+  etcd-3-data:
+  prometheus-data:
+  grafana-data:

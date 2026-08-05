@@ -46,19 +46,23 @@ export interface RouteProvider {
 export class LocalRoutingService implements RouteProvider {
   readonly #closures = new Set<string>();
   #mapVersion = "map-1";
+  #closuresExpireAt = Number.POSITIVE_INFINITY;
 
   get mapVersion(): string { return this.#mapVersion; }
 
-  replaceClosures(cells: string[], version: string): void {
+  replaceClosures(cells: string[], version: string, expiresAt?: string): void {
     this.#closures.clear();
     cells.forEach((cell) => this.#closures.add(cell));
     this.#mapVersion = version;
+    const parsedExpiry = expiresAt ? Date.parse(expiresAt) : Number.POSITIVE_INFINITY;
+    this.#closuresExpireAt = Number.isFinite(parsedExpiry) ? parsedExpiry : Number.POSITIVE_INFINITY;
   }
 
   async estimate(from: GeoPoint, to: GeoPoint, deadlineMs: number, transportMode: TransportMode = "GROUND"): Promise<RouteEstimate> {
     const distance = distanceMeters(from, to);
     // Air transport ignores road closures
     if (transportMode !== "AIR") {
+      if (this.#closures.size > 0 && Date.now() >= this.#closuresExpireAt) this.#closures.clear();
       const closed = this.#closures.has(spatialCell(from)) || this.#closures.has(spatialCell(to));
       if (closed) return { etaSeconds: Number.POSITIVE_INFINITY, distanceMeters: distance, confidence: 0, source: "LOCAL_GRAPH" };
     }
@@ -93,4 +97,3 @@ export class LocalRoutingService implements RouteProvider {
     };
   }
 }
-

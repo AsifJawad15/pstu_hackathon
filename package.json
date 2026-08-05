@@ -16,12 +16,30 @@
     "contracts:check": "node scripts/compile-contracts.ts",
     "benchmark": "node scripts/benchmark.ts",
     "stress:reservation": "node scripts/reservation-stress.ts",
+    "evaluate:blackbox": "node --env-file-if-exists=.env evaluation/black-box.mjs",
+    "evaluate:isolated": "node evaluation/run-isolated.mjs",
     "secrets:rotate": "node scripts/rotate-dev-secrets.ts",
-    "demo:seed": "node --env-file=.env scripts/seed-demo.ts"
+    "secrets:ensure": "node scripts/rotate-dev-secrets.ts --missing-only",
+    "demo:seed": "node --env-file=.env scripts/seed-demo.ts",
+    "docker:up": "docker compose up -d --build",
+    "docker:status": "docker compose ps",
+    "docker:logs": "docker compose logs --tail=100 api postgres kafka-1 kafka-2 kafka-3 redis etcd-1 etcd-2 etcd-3",
+    "docker:smoke": "docker compose --profile tools run --rm smoke",
+    "docker:optimizer-test": "docker compose run --rm optimizer python -m unittest discover -s tests -v",
+    "docker:aegis-test": "docker compose run --rm optimizer python aegis-tests/test_all.py",
+    "test:optimizer-fallback": "node --env-file=.env scripts/optimizer-fallback-smoke.ts",
+    "docker:down": "docker compose down"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/pg": "^8.20.4",
     "protobufjs-cli": "^2.6.1",
     "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "etcd3": "^1.1.2",
+    "kafkajs": "^2.2.4",
+    "pg": "^8.22.0",
+    "redis": "^6.2.0"
   }
 }

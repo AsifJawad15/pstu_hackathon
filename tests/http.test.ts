@@ -25,8 +25,24 @@ test("HTTP boundary authenticates, accepts, allocates and exposes readiness", as
   assert.equal(ready.status, 200);
   assert.equal((await ready.json() as { auditIntegrity: boolean }).auditIntegrity, true);
 
+  const consolePage = await fetch(`${base}/`);
+  assert.equal(consolePage.status, 200);
+  assert.match(consolePage.headers.get("content-security-policy") ?? "", /default-src 'self'/);
+  const etag = consolePage.headers.get("etag");
+  assert.ok(etag);
+  const cachedConsolePage = await fetch(`${base}/`, { headers: { "if-none-match": etag } });
+  assert.equal(cachedConsolePage.status, 304);
+
   const denied = await fetch(`${base}/v1/incidents`, { method: "POST", body: JSON.stringify(incident()) });
   assert.equal(denied.status, 401);
+
+  const snapshot = await fetch(`${base}/v1/system/snapshot`, {
+    headers: { authorization: "Bearer integration-token" },
+  });
+  assert.equal(snapshot.status, 200);
+  const snapshotBody = await snapshot.json() as { resources: { total: number; available: number } };
+  assert.equal(snapshotBody.resources.total, 1);
+  assert.equal(snapshotBody.resources.available, 1);
 
   const accepted = await fetch(`${base}/v1/incidents`, {
     method: "POST",

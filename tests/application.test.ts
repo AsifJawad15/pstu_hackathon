@@ -69,6 +69,35 @@ test("concurrent incidents cannot double-assign one exclusive resource", async (
   app.close();
 });
 
+test("concurrent auto-allocation preserves every durable incident receipt while fencing one winner", async () => {
+  const app = application();
+  const capability = `EXCLUSIVE-${crypto.randomUUID()}`;
+  app.resources.ingest(resource("exclusive-auto-unit", { capabilities: [capability] }));
+  const inputs = Array.from({ length: 8 }, () => incident({
+    incidentId: crypto.randomUUID(), requiredCapabilities: [capability], autoAllocate: true,
+  }));
+  const outcomes = await Promise.all(inputs.map((input) => app.reportIncident(input)));
+  assert.ok(outcomes.every((outcome) => outcome.status === "ACCEPTED"));
+  const assignments = inputs.flatMap((input) => app.database.assignmentsForIncident(input.incidentId!));
+  assert.equal(assignments.length, 1);
+  const modes = outcomes.map((outcome) => (outcome.allocation as { decision: { mode: string } }).decision.mode);
+  assert.equal(modes.filter((mode) => mode === "RESERVATION_CONTENDED").length, 7);
+  app.close();
+});
+
+test("startup recovery returns interrupted allocations to the triage queue", async () => {
+  const app = application();
+  const accepted = await app.reportIncident(incident({ autoAllocate: false }));
+  const incidentId = (accepted.incident as { incidentId: string }).incidentId;
+  const reported = app.database.getIncident(incidentId)!;
+  const triaged = app.database.transitionIncident(incidentId, reported.version, "TRIAGED");
+  app.database.transitionIncident(incidentId, triaged.version, "ALLOCATING");
+  assert.deepEqual(app.database.recoverInterruptedAllocations(), [incidentId]);
+  assert.equal(app.database.getIncident(incidentId)?.status, "TRIAGED");
+  assert.equal(app.database.auditIntegrity(), true);
+  app.close();
+});
+
 test("stale fencing epochs are rejected", async () => {
   const app = application();
   app.resources.ingest(resource("ambulance-1"));

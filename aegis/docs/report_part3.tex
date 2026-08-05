@@ -1,0 +1,397 @@
+% ===================================================== failure recovery ====
+\section{Failure recovery strategy}
+
+\subsection{The degradation ladder}
+
+The governing principle: \emph{an emergency system that stops dispatching
+because a microservice is unhealthy has failed worse than one that dispatches
+on a slightly stale estimate.} Each rung below is implemented and exercised.
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}rlp{56mm}l@{}}
+\toprule
+& \textbf{Rung} & \textbf{Trigger and behaviour} & \textbf{Quality} \\
+\midrule
+1 & Exact solver + live routing & Normal operation & Optimal \\
+2 & Exact solver + cached travel times & Routing engine slow; cache serves & Near-optimal \\
+3 & Greedy + great-circle estimates & Circuit breaker open; conservative fallback distances & Good \\
+4 & Region-local greedy, last-known state & Event log partition unavailable; worker uses local snapshot & Degraded but safe \\
+5 & Human dispatcher console & Decision plane unavailable; operators dispatch manually against live resource state & Manual \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keybox}
+\textbf{The fallback is pessimistic by construction.} The great-circle
+estimate applies a $1.15\times$ penalty and a speed derate, so degraded
+estimates are \emph{longer} than reality rather than shorter. Over-promising
+an arrival time in an emergency is the more dangerous error: it causes the
+dispatcher to stop looking for alternatives.
+\end{keybox}
+
+\subsection{Failure modes and responses}
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}p{34mm}p{44mm}p{50mm}@{}}
+\toprule
+\textbf{Failure} & \textbf{Blast radius} & \textbf{Recovery} \\
+\midrule
+Optimiser worker crash & One region shard & Leases expire and are reaped; partition reassigned; state rebuilt from compacted topic + database. RTO $<$ 60\,s \\
+Routing engine outage & Estimate quality & Circuit breaker opens after 5 failures; fallback serves; half-open probe restores automatically \\
+Database primary loss & Command path & Synchronous replica promotion; RPO $\approx$ 0 because commits require in-sync acknowledgement \\
+Event log broker loss & Throughput & RF=3 with \texttt{min.insync.replicas}=2; producers retry idempotently \\
+Poison message & One partition & Bounded retry, then dead-letter with full context; partition continues \\
+Network partition between regions & Cross-region borrowing only & Shards remain independently operational (static stability); borrowing degrades to none \\
+Cache cluster loss & Latency & Cache-aside means correctness is unaffected; load falls back to the routing engine, protected by the breaker \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Consistency and delivery semantics}
+
+Transport is at-least-once; \emph{effects} are exactly-once. That combination
+is achieved with two standard patterns whose absence causes subtle corruption:
+
+\begin{itemize}
+\item \textbf{Transactional outbox.} The assignment row and the event
+      announcing it are written in one transaction; a relay publishes
+      afterwards. This removes the dual-write race in which a resource is
+      marked busy but the assignment event never reaches the crew, or the
+      reverse.
+\item \textbf{Idempotency keys.} Every command carries one; an effects table
+      deduplicates. Redelivery after a broker retry is therefore a no-op
+      rather than a second ambulance.
+\end{itemize}
+
+\subsection{Validating resilience}
+
+Chaos injection is part of the evaluation harness, not a separate exercise: the
+reference run includes road closures, vehicle failures, hospital saturation and
+a mid-surge routing-engine outage. Section~\ref{sec:eval} reports how many
+travel-time estimates were served in degraded mode and how many times the
+circuit breaker tripped. In production this extends to scheduled game days,
+periodic restore drills, and shadow-mode replay of historical event streams
+against candidate policy versions.
+
+% ======================================================== scalability ======
+\section{Scalability strategy}
+
+\subsection{Geographic sharding as the scaling unit}
+
+\begin{center}
+\begin{tikzpicture}[node distance=4mm]
+\node[bus, minimum width=112mm] (log) {Event log: 256 partitions, key = \texttt{region\_id}};
+\foreach \i/\n in {0/A, 1/B, 2/C, 3/D} {
+  \node[svc, below=9mm of log, xshift={(\i-1.5)*29mm}, minimum width=26mm] (w\i)
+    {Solver worker \n\\\tiny owns shard, exclusive writer};
+  \draw[fl] ([xshift={(\i-1.5)*29mm}]log.south) -- (w\i.north);
+}
+\node[store, below=8mm of w1, xshift=14mm, minimum width=52mm] (db)
+  {Shared state: PostgreSQL (CAS) + Redis (leases)\\\tiny consulted only for cross-shard borrowing};
+\foreach \i in {0,1,2,3} { \draw[fl,dashed] (w\i) -- (db); }
+\end{tikzpicture}
+\end{center}
+
+One region shard maps to one event-log partition and one solver worker holding
+exclusive write ownership. Shards run in parallel with no shared state and no
+distributed locking on the hot path. The national fleet scales by adding
+shards, not by growing one matrix quadratically.
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}lp{46mm}p{52mm}@{}}
+\toprule
+\textbf{Dimension} & \textbf{Bottleneck} & \textbf{Scaling response} \\
+\midrule
+Incident rate & Ingestion CPU & Stateless horizontal scale behind the gateway; over-partition the log (256) so future growth needs no repartitioning \\
+Fleet size & Solver matrix $O(n^3)$ & Per-shard candidate and slot caps; the spatial index bounds candidates by geometry, not by fleet size \\
+Concentrated disaster & One hot shard & Sub-shard split: the region is divided at cell level and additional workers claim the sub-keys \\
+Read/query load & Database replicas & CQRS: command side on PostgreSQL, read models materialised in Redis and ClickHouse \\
+Cross-region coordination & Central coordinator & Hierarchical: local solvers plus a coarse national transfer problem solved at a longer cadence \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{decbox}
+\dec{Autoscale on consumer lag, not CPU.}{Lag is the metric that actually
+correlates with dispatch delay. A solver worker can be at 40\% CPU and
+minutes behind because it is blocked on I/O, and CPU-based autoscaling would
+never notice. KEDA-style lag-driven scaling reacts to the thing the citizen
+experiences.}
+\end{decbox}
+
+\subsection{Hot-partition handling}
+
+A cyclone concentrates demand into two or three regions. Uniform partitioning
+would leave one worker saturated while twenty idle. Detection is by lag and
+slot-count per shard; the response is to split the region's key space at H3
+cell granularity and let additional workers claim sub-keys, with the
+reservation lease continuing to guarantee conflict-freedom across the split.
+
+% ======================================================== performance ======
+\section{Performance considerations}
+
+\subsection{Latency budgets and measured results}
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Path} & \textbf{Budget} & \textbf{Measured (p99)} & \textbf{Notes} \\
+\midrule
+Tier-1 admission decision & 200\,ms & \textbf{2.4\,ms} & Reference implementation, pure Python, single core \\
+Tier-2 shard epoch & 400\,ms & \textbf{36\,ms} & Exact solve + LNS across all shards \\
+Travel-time lookup (cached) & 1\,ms & --- & 97--98\% hit rate observed \\
+End-to-end accept $\rightarrow$ commit & 200\,ms & --- & Sum of stages 1--7 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The headroom is deliberate. A pure-Python reference implementation
+running two orders of magnitude inside budget means a production
+implementation in Go or Rust has room for fleets far larger than the one
+simulated, and room for the budget to be consumed by network hops that the
+in-process reference does not pay.
+
+\subsection{Where the performance actually comes from}
+
+\begin{itemize}
+\item \textbf{Bounded candidate sets.} The spatial index caps candidates
+      geometrically, so Tier-1 cost is independent of national fleet size.
+      This is the single most important performance property: without it,
+      admission latency degrades as the system succeeds and grows.
+\item \textbf{Contraction hierarchies} in the routing engine give
+      microsecond-scale path queries; AEGIS additionally caches at cell
+      granularity so most queries never reach it.
+\item \textbf{Cached free-flow, overlaid live.} The cache stores free-flow
+      travel time \textemdash{} a property of the road graph \textemdash{} and
+      applies closure and weather multipliers at read time. This is why a
+      coarse key and a ten-minute TTL are safe; baking the overlay in would
+      make both unsafe.
+\item \textbf{Binary serialisation} (Protobuf with a schema registry) and
+      batched database writes behind a connection pooler.
+\item \textbf{Load shedding by priority.} Under saturation, telemetry is shed
+      before incident intake. The last thing to degrade is the ability to
+      accept an emergency call.
+\end{itemize}
+
+% ========================================================== database =======
+\section{Database design}
+
+\subsection{Polyglot persistence, justified per store}
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}lp{40mm}p{56mm}@{}}
+\toprule
+\textbf{Store} & \textbf{Holds} & \textbf{Why this store} \\
+\midrule
+PostgreSQL + PostGIS & Incidents, resources, assignments, outbox, audit & Multi-entity transactional integrity is non-negotiable for reservations; PostGIS gives native geography indexing. A pure key-value store cannot express the all-or-nothing group reservation \\
+Redis & Live positions (GEO sets), leases, ETA cache, dedup keys, rate limits & Sub-millisecond access to state that changes on every telemetry ping; TTL semantics are exactly what leases need \\
+ClickHouse / TimescaleDB & Telemetry, metrics, decision journal & Telemetry write amplification would destroy the command database; columnar storage suits the analytical query shape \\
+Object store (WORM) & Sealed audit records & Immutable retention for post-incident inquiry; cheap at long horizons \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Core schema}
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}lp{86mm}@{}}
+\toprule
+\textbf{Table} & \textbf{Key columns, keys and indexes} \\
+\midrule
+\texttt{incident} &
+\texttt{incident\_id} PK, \texttt{region\_id}, \texttt{geog GEOGRAPHY(Point)},
+\texttt{severity}, \texttt{affected}, \texttt{window\_s}, \texttt{hazard},
+\texttt{state}, \texttt{version}, \texttt{reported\_at}.
+GIST on \texttt{geog}; BRIN on \texttt{reported\_at}; partial B-tree on
+\texttt{state} where open. Partitioned monthly by \texttt{reported\_at},
+sub-partitioned by \texttt{region\_id} \\
+\addlinespace
+\texttt{resource} &
+\texttt{resource\_id} PK, \texttt{type}, \texttt{region\_id}, \texttt{geog},
+\texttt{capability}, \texttt{capacity}, \texttt{occupied}, \texttt{state},
+\texttt{version}. GIST on \texttt{geog}; partial index on
+\texttt{state='AVAILABLE'} \\
+\addlinespace
+\texttt{assignment} &
+\texttt{assignment\_id} PK, \texttt{incident\_id} FK, \texttt{resource\_id} FK,
+\texttt{state}, \texttt{eta\_s}, \texttt{cost}, \texttt{generation},
+\texttt{supersedes}, \texttt{rationale JSONB}.
+\textbf{Partial unique index on \texttt{resource\_id} where state is live}
+\textemdash{} the database itself refuses to record a double-booking \\
+\addlinespace
+\texttt{assignment\_event} &
+Append-only event stream per assignment aggregate. The state table is a
+projection; this is the source of truth and the replay substrate \\
+\addlinespace
+\texttt{outbox} &
+\texttt{topic}, \texttt{key}, \texttt{payload}, \texttt{published\_at}.
+Written in the same transaction as the state change; drained by a relay \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keybox}
+\textbf{The partial unique index is the point.} Application-level conflict
+prevention is necessary but not sufficient; a database constraint that makes
+the invalid state \emph{unrepresentable} converts a possible silent corruption
+into a loud, immediate constraint violation. Defence in depth, at negligible cost.
+\end{keybox}
+
+\subsection{Event sourcing for assignments only}
+
+Assignments are event-sourced; incidents and resources are not. The asymmetry
+is deliberate: assignments are the entity whose history must be reconstructible
+in an inquiry ("why did unit 47 go to the wrong address?"), and whose state
+transitions carry legal weight. Event-sourcing everything would impose
+projection complexity where a mutable row with a version column is sufficient.
+
+% ========================================================== caching ========
+\section{Caching strategy}
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}lp{34mm}p{30mm}p{34mm}@{}}
+\toprule
+\textbf{Layer} & \textbf{Contents} & \textbf{Policy} & \textbf{Invalidation} \\
+\midrule
+L1 in-process & Region polygons, hospital metadata, policy weights & TTL + version & Broadcast on \texttt{config.updates} \\
+L2 Redis & Travel-time matrix, resource snapshots, incident read models & Cache-aside, 10\,min TTL & Partition-scoped version bump \\
+Write-through & Resource live state & Immediate & Written with the state change \\
+Negative cache & "no route exists" results & Short TTL & Prevents repeated futile routing calls \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Surgical invalidation}
+
+When a bridge closes, only the travel times touching the affected cells must be
+invalidated. Each cache entry records the \emph{partition version} it was
+written under; a version bump makes every affected entry a miss with no scan
+and no delete pass, while unrelated routes stay hot. A nationwide flush during
+a cyclone would collapse into a routing-engine stampede exactly when the system
+is busiest. A unit test asserts that an unrelated route remains cached across a
+closure.
+
+\subsection{Stampede protection}
+
+Two mechanisms, both necessary:
+
+\begin{itemize}
+\item \textbf{Probabilistic early expiry (XFetch).} Under surge, thousands of
+      concurrent requests miss the same key at the same instant. Staggering
+      refreshes before hard expiry spreads the recomputation.
+\item \textbf{Single-flight.} An in-flight set collapses duplicate
+      recomputations of the same key to one, so only one caller pays the
+      routing call.
+\end{itemize}
+
+% ================================================== event processing =======
+\section{Event processing strategy}
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}lp{88mm}@{}}
+\toprule
+\textbf{Property} & \textbf{Design} \\
+\midrule
+Ordering & Total order per partition (region). Cross-region ordering is not required and is not paid for \\
+Delivery & At-least-once transport; exactly-once effects via idempotency keys \\
+Backpressure & Bounded queues; producers block rather than buffer without limit; load shed by priority class \\
+Retry & Bounded exponential retry in-partition, then dead-letter with full context and replay tooling \\
+Fairness & Partitions polled round-robin with a bounded batch, so one saturated region cannot starve the rest of the country \\
+Schema & Protobuf with a registry; backward-compatible evolution enforced in CI \\
+Replay & The log plus the decision journal allow any historical period to be re-run against a candidate policy version in shadow mode \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keybox}
+\textbf{Replay is a first-class capability, not a debugging afterthought.}
+It is how a proposed change to the triage weights is evaluated before it
+touches a real dispatch: re-run last month's actual event stream under the new
+policy, compare outcome distributions, and only then promote. A tuning change
+in this domain is a clinical change, and deserves the same evidence standard.
+\end{keybox}
+
+% ========================================================== security =======
+\section{Security considerations}
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}lp{88mm}@{}}
+\toprule
+\textbf{Concern} & \textbf{Control} \\
+\midrule
+Service identity & mTLS between all services via a service mesh; workload identity, no shared secrets \\
+Human access & OIDC with short-lived tokens; RBAC combined with ABAC scoped to region, so a district operator cannot retask another division's fleet \\
+Casualty data & Field-level encryption with envelope keys in a KMS; logs carry pseudonymous incident ids only \\
+Audit & Append-only decision journal, signed and sealed to WORM storage; immutable for the statutory retention period \\
+\textbf{Malicious incident injection} & The highest-value attack: fabricated emergencies that drain a district's fleet before a real attack. Mitigated by reporter reputation scoring, cross-verification of clustered reports, per-source rate limits, and anomaly detection on arrival-rate deviation from forecast. Suspicious reports are dispatched at reduced weight rather than dropped \\
+Resource-drain abuse & Per-caller quotas; coverage floors that the optimiser will not breach regardless of incoming priority \\
+Secrets & Vault-managed with automatic rotation; least privilege per service \\
+Network & Segmented; the decision plane is not internet-reachable \\
+Compliance & Health data handled to HIPAA/GDPR-equivalent standards; data residency enforced per region \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{decbox}
+\dec{Suspicious reports are down-weighted, not rejected.}{A false negative
+here is a real emergency ignored because the reporter had no history. The
+scoring model can express reduced confidence as a lower vulnerability and
+scale prior; it should not express it as a dropped call.}
+\end{decbox}
+
+% ==================================================== observability =======
+\section{Monitoring and observability}
+
+Infrastructure metrics are necessary but not sufficient. The signals that
+matter here are clinical, not computational.
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}lp{78mm}@{}}
+\toprule
+\textbf{Class} & \textbf{Signals} \\
+\midrule
+Domain SLIs & Time-to-first-assignment; first-arrival latency by severity; deadline-miss rate; unassigned incident count and age; reassignment churn rate; coverage gap per region \\
+Solver health & Objective delta per epoch; solve time; matrix dimensions; budget exhaustion count; LNS improvement rate \\
+Resource health & Utilisation by type and region; lease reclaim rate; commit-denied rate; vehicles out of service \\
+Dependency health & Circuit-breaker state; degraded-estimate rate; cache hit rate; consumer lag per partition \\
+Standard & RED for services, USE for nodes, error budgets and burn-rate alerts \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Tracing and the decision journal}
+
+\texttt{incident\_id} propagates as OpenTelemetry baggage, so a single trace
+spans call intake to hospital handover. Alongside it, every commit writes a
+\textbf{decision record}:
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Field} & \textbf{Contents} \\
+\midrule
+\texttt{candidates\_considered} & Size of the evaluated candidate set \\
+\texttt{rejected\_reasons} & Histogram: type mismatch, capability below minimum, beyond reach radius, unavailable \\
+\texttt{cost\_breakdown} & Every term: travel, lateness, over-qualification, scarcity, coverage, continuity, switching \\
+\texttt{priority\_breakdown} & Per-term triage contributions and policy version \\
+\texttt{runner\_up\_cost} & What the next-best option would have cost \\
+\texttt{objective\_before/after} & The improvement this epoch produced \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keybox}
+This record is the substrate for three otherwise-impossible things: the
+"why this unit?" panel in the dispatcher console, the post-incident inquiry,
+and offline policy evaluation. It is written on the commit path, not
+reconstructed later, because a reconstruction is an argument and a record is
+evidence.
+\end{keybox}
+
+\subsection{Human override}
+
+Dispatchers can override any assignment. Overrides are recorded with the
+system's own recommendation and the operator's stated reason, and the
+divergence rate between human and system choices is itself a monitored signal:
+a rising divergence rate in one region is evidence that the model's weights no
+longer match conditions on the ground.

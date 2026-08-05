@@ -18,6 +18,9 @@ import { DispatchService } from "./services/dispatch.ts";
 import { IncidentService } from "./services/incidents.ts";
 import { MemoryNotificationProvider, NotificationOrchestrator } from "./services/notifications.ts";
 import { ResourceIndex, ResourceService } from "./services/resources.ts";
+import { ProductionIntegrations } from "./platform/productionIntegrations.ts";
+import { uuidv7 } from "./platform/ids.ts";
+import { PythonOptimizerClient } from "./services/pythonOptimizer.ts";
 
 export class EmergencyApplication {
   readonly config: AppConfig;
@@ -33,12 +36,23 @@ export class EmergencyApplication {
   readonly notifications: NotificationOrchestrator;
   readonly dispatch: DispatchService;
   readonly shards = new ShardDirectory();
+  readonly integrations: ProductionIntegrations;
+  readonly pythonOptimizer: PythonOptimizerClient;
   readonly #reoptimizationCooldowns = new Map<string, number>();
+  #optimizerHealthTimer?: NodeJS.Timeout;
+  #outboxTimer?: NodeJS.Timeout;
 
   constructor(config: AppConfig, database?: OperationalDatabase) {
     this.config = config;
     this.database = database ?? new OperationalDatabase(config.databasePath);
     this.outbox = new OutboxPublisher(this.database, this.eventBus);
+    this.database.recoverInterruptedAllocations();
+    const activeEnvironment = this.database.latestActiveEnvironment(config.regionId);
+    if (activeEnvironment) {
+      this.routing.replaceClosures(activeEnvironment.closedCells, activeEnvironment.mapVersion, activeEnvironment.expiresAt);
+    }
+    this.integrations = new ProductionIntegrations(config.productionIntegrations);
+    this.pythonOptimizer = new PythonOptimizerClient(config.optimizer);
     const index = new ResourceIndex();
     this.resources = new ResourceService(this.database, index);
     this.resources.rebuild(config.regionId);
@@ -47,7 +61,7 @@ export class EmergencyApplication {
       ? new EncryptedEdgeSpool(join(config.databasePath === ":memory:" ? "." : join(config.databasePath, ".."), "edge-spool.ndjson"), config.edgeSpoolKeyHex)
       : undefined;
     this.incidents = new IncidentService(this.database, admission, DEFAULT_POLICY, spool);
-    this.decisions = new DecisionEngine(this.routing, DEFAULT_POLICY);
+    this.decisions = new DecisionEngine(this.routing, DEFAULT_POLICY, this.pythonOptimizer);
     const providers = [
       new MemoryNotificationProvider("primary", ["APP", "SMS", "EOC", "CAP"]),
       new MemoryNotificationProvider("secondary", ["SMS", "EOC", "RADIO"]),
@@ -63,8 +77,43 @@ export class EmergencyApplication {
     this.metrics.increment("incident_intake_total", { status: receipt.status, priority: receipt.incident.priority });
     this.metrics.observe("incident_acceptance", performance.now() - start, { priority: receipt.incident.priority });
     if (receipt.status !== "ACCEPTED" || input.autoAllocate === false || !this.config.autoAllocate) return receipt;
-    const allocation = await this.allocate(receipt.incident.incidentId);
-    return { ...receipt, allocation };
+    try {
+      const allocation = await this.allocate(receipt.incident.incidentId);
+      return { ...receipt, allocation };
+    } catch (error) {
+      // Incident acceptance is already durable. A competing reservation must
+      // not turn that receipt into an HTTP failure or leave the incident in
+      // ALLOCATING. The caller receives an explicit, replayable contention
+      // decision and may retry allocation when another resource is available.
+      if (!(error instanceof AppError) || error.code !== "RESOURCE_CONFLICT") throw error;
+      const current = this.database.getIncident(receipt.incident.incidentId);
+      if (current?.status === "ALLOCATING") {
+        this.database.transitionIncident(current.incidentId, current.version, "TRIAGED");
+      }
+      const attempted = this.database.latestDecisionForIncident(receipt.incident.incidentId);
+      if (!attempted) throw error;
+      const contentionDecision = {
+        ...attempted,
+        decisionId: uuidv7(),
+        mode: "RESERVATION_CONTENDED" as const,
+        generatedAt: new Date().toISOString(),
+        chosenResourceIds: [],
+        reasons: [...attempted.reasons, "RESOURCE_RESERVATION_CONTENDED", "INCIDENT_RETAINED_FOR_REALLOCATION"],
+      };
+      this.database.storeDecision(contentionDecision);
+      this.#recordDecisionMetrics(contentionDecision);
+      this.database.appendAudit("allocation-service", "RESERVATION_CONTENTION", receipt.incident.incidentId, {
+        attemptedDecisionId: attempted.decisionId,
+        contentionDecisionId: contentionDecision.decisionId,
+      });
+      return {
+        ...receipt,
+        allocation: {
+          decision: contentionDecision, assignments: [], commands: [], facilityReservations: [],
+          reservationStatus: "CONTENDED",
+        },
+      };
+    }
   }
 
   async allocate(incidentId: string): Promise<Record<string, unknown>> {
@@ -79,9 +128,9 @@ export class EmergencyApplication {
     if (candidates.length === 0) candidates = this.database.listResources(incident.location.regionId);
     const decision = await this.decisions.decide(incident, candidates, 100, this.database);
     this.database.storeDecision(decision);
+    this.#recordDecisionMetrics(decision);
     if (decision.chosenResourceIds.length === 0) {
       this.database.transitionIncident(incidentId, incident.version, "TRIAGED");
-      this.metrics.increment("decision_total", { mode: decision.mode });
       return { decision, assignments: [], commands: [], facilityReservations: [] };
     }
     const selected = decision.chosenResourceIds.map((resourceId) => {
@@ -121,15 +170,29 @@ export class EmergencyApplication {
       const current = this.database.getResource(assignment.resourceId);
       if (current) this.resources.index.update(current);
     });
-    this.metrics.increment("decision_total", { mode: decision.mode });
     this.metrics.observe("allocation_reservation", performance.now() - started, { priority: incident.priority });
-    await this.outbox.flush();
+    // Local commitment is already durable. External replication is handled
+    // continuously by the bounded transactional-outbox publisher so network
+    // latency cannot delay the emergency response.
+    void this.outbox.flush(250);
     return {
       decision,
       assignments: assignments.map((assignment) => this.database.getAssignment(assignment.assignmentId)),
       commands,
       facilityReservations,
     };
+  }
+
+  #recordDecisionMetrics(decision: import("./domain/types.ts").DecisionExplanation): void {
+    this.metrics.increment("decision_total", { mode: decision.mode });
+    if (decision.optimizerEvidence?.fallbackReason) {
+      this.metrics.increment("optimizer_fallback_total", { reason: decision.optimizerEvidence.fallbackReason });
+    } else if (decision.optimizerEvidence?.algorithm) {
+      this.metrics.increment("optimizer_decision_total", { algorithm: decision.optimizerEvidence.algorithm });
+      if (decision.optimizerEvidence.durationMs !== undefined) {
+        this.metrics.observe("optimizer_solve", decision.optimizerEvidence.durationMs, { algorithm: decision.optimizerEvidence.algorithm });
+      }
+    }
   }
 
   acknowledge(input: {
@@ -185,7 +248,7 @@ export class EmergencyApplication {
     if (Date.parse(input.expiresAt) <= Date.now()) throw new AppError("ENVIRONMENT_EVENT_EXPIRED", "Environment event has expired", 410);
     const applied = this.database.addEnvironmentEvent(input);
     if (applied && input.closedCells) {
-      this.routing.replaceClosures(input.closedCells, input.mapVersion);
+      this.routing.replaceClosures(input.closedCells, input.mapVersion, input.expiresAt);
       // Reactive: trigger reoptimization for active incidents affected by road/route closures
       this.triggerReactiveReoptimization(input.regionId, "ROUTE_CLOSURE");
     }
@@ -228,6 +291,34 @@ export class EmergencyApplication {
     return this.notifications.authorizeWarning(input, new Set(["national-eoc", "regional-eoc", "civil-defence"]));
   }
 
+  systemSnapshot(): ReturnType<OperationalDatabase["operationalSnapshot"]> {
+    return this.database.operationalSnapshot(this.config.regionId);
+  }
+
+  async start(): Promise<void> {
+    await Promise.all([this.integrations.start(this.eventBus, this.config.regionId), this.pythonOptimizer.probe()]);
+    this.#optimizerHealthTimer = setInterval(() => { void this.pythonOptimizer.probe(); }, 5_000);
+    this.#optimizerHealthTimer.unref();
+    void this.outbox.flush(250);
+    this.#outboxTimer = setInterval(() => { void this.outbox.flush(250); }, 500);
+    this.#outboxTimer.unref();
+  }
+
+  platformTopology(): ReturnType<ProductionIntegrations["snapshot"]> & { optimizer: ReturnType<PythonOptimizerClient["snapshot"]> } {
+    const topology = this.integrations.snapshot(this.database.pendingOutbox(1_000).length);
+    const operational = this.database.operationalSnapshot(this.config.regionId);
+    const optimizer = this.pythonOptimizer.snapshot();
+    this.metrics.setGauge("emergency_outbox_unpublished_events", topology.retainedOutboxEvents);
+    this.metrics.setGauge("emergency_outbox_oldest_unpublished_seconds", operational.eventBacklog.oldestAgeSeconds);
+    for (const integration of topology.integrations) {
+      this.metrics.setGauge("emergency_integration_up", integration.state === "UP" ? 1 : 0, {
+        integration: integration.name,
+      });
+    }
+    this.metrics.setGauge("emergency_optimizer_up", optimizer.state === "UP" ? 1 : 0);
+    return { ...topology, optimizer };
+  }
+
   async recommendReoptimization(incidentId: string): Promise<Record<string, unknown>> {
     const incident = this.database.getIncident(incidentId);
     if (!incident) throw new AppError("INCIDENT_NOT_FOUND", "Incident not found", 404);
@@ -257,6 +348,13 @@ export class EmergencyApplication {
     });
     this.metrics.observe("reoptimization", improved.durationMs, { action: recommendation.action });
     return recommendation;
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.#optimizerHealthTimer) clearInterval(this.#optimizerHealthTimer);
+    if (this.#outboxTimer) clearInterval(this.#outboxTimer);
+    await this.outbox.flush(1_000);
+    await this.integrations.close();
   }
 
   close(): void { this.database.close(); }

@@ -1,0 +1,304 @@
+% ====================================================== decision strategy ==
+\section{Decision-making strategy}
+
+\subsection{Triage: an explainable, monotone, versioned model}
+
+Each incident receives a priority score in $[0,112]$ from a weighted additive
+model over five normalised terms plus a bounded aging term:
+
+\[
+P(i,t) \;=\; 100\sum_{k\in K} w_k\,\phi_k(i,t)
+\;+\; A_{\max}\Bigl(1-e^{-\,(t-t_i)/\tau}\Bigr),
+\qquad
+K=\{\text{sev},\text{scale},\text{urg},\text{vuln},\text{haz}\}
+\]
+
+\noindent with $\sum_k w_k = 0.94$, $A_{\max}=12$, $\tau=900$\,s, and
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}llp{72mm}@{}}
+\toprule
+\textbf{Term} & \textbf{Weight} & \textbf{Shape and rationale} \\
+\midrule
+Severity & 0.32 & $((s-1)/4)^{0.85}$, convex: catastrophic must separate sharply from serious \\
+Scale & 0.18 & $\log(1+n)/\log(2001)$: 500 casualties are worse than 5 but not $100\times$ worse; saturates so mass-casualty events cannot make every other term irrelevant \\
+Urgency & 0.24 & Fraction of the survivability window consumed, saturating at 1.0 past deadline so an expired window cannot monopolise the national fleet \\
+Vulnerability & 0.10 & Children, elderly, disabled, isolated populations \\
+Hazard & 0.10 & Environmental risk class (flood, cyclone, collapse, chemical) \\
+Aging & $\le 12$ pts & Anti-starvation. \emph{Bounded}, because an unbounded aging term eventually lets a backlog of minor calls outrank a fresh catastrophe \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keybox}
+\textbf{Why not a learned ranker at the top level?} Three reasons, all
+operational rather than technical.
+
+\begin{enumerate}
+\item \emph{Explainability.} An additive model yields a per-term contribution
+      breakdown for free. A gradient-boosted model yields a number and a
+      SHAP plot nobody can act on at 3\,a.m.
+\item \emph{Monotonicity is a safety property.} Increasing severity must never
+      lower priority. Here that is true by construction and unit-tested. In a
+      learned model it is testable only statistically, and a violation is a
+      headline.
+\item \emph{Auditability.} Every score is stamped with a policy version, so a
+      post-incident inquiry replays the exact function that ran that night.
+\end{enumerate}
+
+Machine learning still belongs in this system \textemdash{} but \emph{upstream},
+as feature estimators (predicted casualty count from call transcript,
+predicted escalation probability, predicted service duration) feeding this
+transparent aggregator. Never as the aggregator.
+\end{keybox}
+
+\subsection{The two-tier engine}
+
+\begin{center}
+\begin{tikzpicture}[node distance=5mm]
+\node[svc, minimum width=30mm] (in) {Incident enriched};
+\node[svc, right=8mm of in, minimum width=34mm, fill=soft!60] (t1)
+  {\textbf{Tier 1 \textemdash{} Admission}\\\tiny $k$-nearest feasible, greedy\\\tiny target p99 $<$ 200\,ms};
+\node[svc, right=8mm of t1, minimum width=30mm] (com) {Lease + commit\\\tiny state \texttt{PROPOSED}};
+\node[svc, below=10mm of t1, minimum width=44mm, fill=soft2]
+  (t2) {\textbf{Tier 2 \textemdash{} Re-optimisation} (per shard)\\\tiny exact rectangular assignment + LNS\\\tiny budgeted, anytime, debounced};
+\node[ext, left=8mm of t2, minimum width=26mm] (trig)
+  {Triggers:\\\tiny new incident, unit freed,\\\tiny road closed, vehicle failed,\\\tiny periodic epoch};
+\draw[fl] (in) -- (t1);
+\draw[fl] (t1) -- (com);
+\draw[fl] (trig) -- (t2);
+\draw[fl] (t2) -- ++(38mm,0) |- (com.south);
+\draw[fl, dashed] (com.south) -- ++(0,-5mm) -| node[lbl, pos=0.25, above] {upgrade if gain $>$ hysteresis} (t2.east);
+\end{tikzpicture}
+\end{center}
+
+Both tiers evaluate the \emph{same} cost function. This matters more than it
+looks: if the fast path and the optimal path disagreed about units, every
+re-optimisation epoch would churn simply because the two tiers were
+speaking different languages.
+
+% ======================================================== optimisation =====
+\section{Optimization approach}
+
+\subsection{The model}
+
+Let $R$ be the set of candidate resources and $I$ the set of open incidents.
+Incident $i$ requires $q_{i\rho}$ units of resource type $\rho$. The natural
+formulation is
+
+\begin{align*}
+\min_{x} \quad & \sum_{r\in R}\sum_{i\in I} c_{ri}\,x_{ri} \;+\; \sum_{i} \Pi_i u_i \\
+\text{s.t.}\quad
+& \textstyle\sum_{r\in R_\rho} x_{ri} + u_{i\rho} = q_{i\rho} && \forall i,\rho \quad\text{(demand)}\\
+& \textstyle\sum_{i\in I} x_{ri} \le 1 && \forall r \quad\text{(a unit serves one incident)}\\
+& \textstyle\sum_{i} x_{ri}\,\beta_i \le \text{cap}_h && \forall h \quad\text{(hospital beds)}\\
+& x_{ri}\in\{0,1\}
+\end{align*}
+
+\noindent which is a \emph{generalized assignment problem with side
+constraints} \textemdash{} NP-hard. The engineering question is not "which
+solver", it is "which reformulation makes the dominant sub-problem exactly
+solvable inside the time budget".
+
+\begin{keybox}
+\textbf{Requirement expansion.} An incident needing 2 ambulances and 1 rescue
+team becomes three independent unit-\emph{slots}. After expansion the demand
+constraint becomes "each slot gets at most one unit", and the core problem is
+a \textbf{rectangular linear assignment problem}: solvable \emph{exactly} in
+$O(n^3)$ by the Jonker--Volgenant shortest-augmenting-path algorithm.
+
+The genuinely combinatorial residue \textemdash{} bed capacity, coverage
+reserve, multi-stop sequencing \textemdash{} is then handled by penalty terms
+in $c_{ri}$ and by a Large Neighbourhood Search pass over the exact solution,
+rather than by abandoning optimality altogether.
+\end{keybox}
+
+\subsection{The cost function}
+
+For resource $r$ and slot $s$ belonging to incident $i$, in \emph{urgency-minutes}:
+
+\[
+c_{rs} =
+\underbrace{\mu_i\,(\eta_{rs} - H)}_{\text{travel}}
++ \underbrace{\lambda\,\mu_i\,[\eta_{rs}-\sigma_i]^+}_{\text{deadline}}
++ \underbrace{\omega\,[\kappa_r-\kappa_s]^+}_{\text{over-qualification}}
++ \underbrace{\gamma\,S_\rho}_{\text{scarcity}}
++ \underbrace{\theta\,C_r}_{\text{coverage}}
++ \underbrace{\mu_i\,\Sigma_r}_{\text{stability}}
+\]
+
+\noindent where $\mu_i = \max(0.15, P_i/100)$ is normalised urgency,
+$\eta_{rs}$ is estimated door-to-scene minutes, $H$ the planning horizon,
+$\sigma_i$ the remaining deadline slack, $\kappa$ capability levels, $S_\rho$
+the scarcity of the asset class, $C_r$ the coverage penalty, and $\Sigma_r$
+the stability term.
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}lp{104mm}@{}}
+\toprule
+\textbf{Term} & \textbf{What it encodes and why it is needed} \\
+\midrule
+Travel & Weighted response time. Negative for useful assignments, so the solver is drawn toward filling urgent slots with near units. \\
+Deadline & Convex penalty for arriving after the survivability window; zero if the unit makes it in time. \\
+Over-qualification & Discourages spending a level-3 advanced unit on a slot that a level-1 unit satisfies, preserving capability for cases that need it. \\
+Scarcity & A helicopter spent on a routine transfer is a helicopter unavailable for the case only it can reach. Deliberately \emph{not} scaled by urgency, so the disincentive is strongest exactly where the asset is least warranted. \\
+Coverage & Marginal cost of stripping a district of its last reserve, weighted by that district's forecast arrival rate. Charged only on draws from the idle pool. \\
+Stability & Continuity bonus for staying on the current task; switching penalty scaling with assignment maturity. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{decbox}
+\dec{Hard reach radius.}{A unit that cannot reach the scene within
+$\eta_{\max}=100$ minutes is infeasible at any price, not merely expensive.
+This is not a tuning constant, it is a correctness guard: a minimum-cost
+assignment algorithm assigns \emph{every row it is given}, so without an
+explicit feasibility cutoff an exact solver will cheerfully dispatch an
+ambulance across the country, remove it from the pool for six hours, and
+still arrive long after the clinical window has closed. This was observed and
+fixed during development of the reference implementation.}
+\end{decbox}
+
+\subsection{Churn control: stability as part of the objective}
+
+Re-optimisation is only valuable if it does not thrash crews. Three mechanisms
+work together:
+
+\begin{enumerate}
+\item \textbf{Assignment maturity.} \texttt{PROPOSED} units are free to move;
+      \texttt{COMMITTED} units cost 40 urgency-minutes to move;
+      \texttt{EN\_ROUTE} units cost 160; \texttt{ARRIVED} units are
+      irrevocable. Optimality is thereby \emph{defined} to include the cost of
+      changing one's mind.
+\item \textbf{Progress-aware estimates.} A unit already travelling is costed on
+      its \emph{remaining} time from its \emph{projected current position}, not
+      re-quoted from the depot it left twenty minutes ago. Without this the
+      solver perpetually believes a moving vehicle is still at its origin and
+      swaps it out endlessly.
+\item \textbf{Demand-level supersession.} A unit is stood down only when its
+      \emph{(incident, resource type)} demand is fully staffed by others.
+      Comparing individual slot indices instead reports a unit as displaced
+      whenever the solver merely permutes interchangeable columns.
+\end{enumerate}
+
+\begin{keybox}
+These three are not polish. Before they were implemented the reference
+engine issued 2{,}233 assignments for 148 incidents \textemdash{} a
+15$\times$ churn rate that made outcomes \emph{worse} than the naive
+baseline despite solving the assignment problem optimally. Afterwards churn
+falls below 2\% of commits and the optimiser's advantage appears. The lesson
+generalises: in a continuously re-planned system, plan stability is not a
+usability concern, it is a prerequisite for the optimisation to deliver any
+value at all.
+\end{keybox}
+
+\subsection{Solver ladder}
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}llp{62mm}@{}}
+\toprule
+\textbf{Stage} & \textbf{Complexity} & \textbf{Role} \\
+\midrule
+Greedy over sorted cost & $O(nm\log nm)$ & Warm start; also the Tier-1 admission decision \\
+Jonker--Volgenant & $O(n^3)$ & Exact optimum of the expanded linear problem \\
+LNS (ruin \& recreate) & anytime & Improves under coupling constraints the linear model cannot express; never returns worse than its input \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The exact solver is verified against exhaustive enumeration on small
+instances and asserted never to be worse than greedy on random instances. LNS
+is asserted to be monotonically non-worsening. All three properties are
+unit tests, not claims.
+
+\begin{decbox}
+\dec{Why not a MILP solver over the full model?}{A national fleet gives
+per-shard matrices of $10^2$--$10^3$, where Jonker--Volgenant runs in
+single-digit milliseconds. A MILP over the unexpanded model with capacity
+constraints does not reliably fit a sub-second budget and, critically, has no
+useful \emph{anytime} behaviour: a truncated branch-and-bound may hold no
+feasible incumbent at all. AEGIS always has a shippable plan.}
+\end{decbox}
+
+% ================================================== continuous re-opt ======
+\section{Continuous re-optimization}
+
+The environment changes in five ways, each with a defined response:
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}lp{46mm}p{52mm}@{}}
+\toprule
+\textbf{Change} & \textbf{Detection} & \textbf{Response} \\
+\midrule
+New incident & \texttt{incidents.enriched} & Tier-1 admission immediately; shard queued for re-optimisation \\
+Unit freed & Telemetry state transition & Debounced re-optimisation trigger; unit re-enters the pool \\
+Road closed / flooded & \texttt{environment.events} & Surgical cache invalidation for affected cells only; shard re-optimised \\
+Vehicle failure & Telemetry heartbeat loss or explicit report & Live assignment revoked with reason code, incident returns to the unmet pool, re-optimisation triggered \\
+Hospital saturation & Bed reservation CAS failure & Handover diverted to next-nearest facility with capacity; if none, the unit holds on scene and the shortage propagates visibly into fleet availability \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keybox}
+\textbf{Debouncing.} Running the solver on every environment change would be
+both wasteful and destabilising \textemdash{} it is the standard control-loop
+problem of a noisy input signal. Triggers are coalesced into at most one epoch
+per debounce window (15\,s in the reference configuration), with a periodic
+floor epoch (30\,s) so that a quiet system still refreshes its plan.
+\end{keybox}
+
+% =================================================== conflict prevention ===
+\section{Preventing resource conflicts}
+\label{sec:conflict}
+
+Double-booking an ambulance is the failure mode that ends the programme. It is
+guarded at three independent layers, so that no single mechanism is
+load-bearing alone.
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}lp{44mm}p{50mm}@{}}
+\toprule
+\textbf{Layer} & \textbf{Mechanism} & \textbf{What it protects against} \\
+\midrule
+Partitioning & Single writer per region shard & The common case: two workers planning the same fleet \\
+Reservation & TTL lease in Redis, acquired before commit, released with a fencing token & Cross-region borrowing; a stale holder freeing somebody else's lease \\
+Persistence & Optimistic concurrency \\ \texttt{UPDATE \dots WHERE version = ?} & Lost updates when two commits interleave at the database \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Why leases have a TTL}
+
+If the optimiser crashes between reserving a unit and committing the
+assignment, a lock without expiry strands that ambulance \emph{forever}. It is
+a correctness bug that is invisible in testing and catastrophic in production,
+because it manifests as a slow, silent erosion of fleet capacity. A TTL lease
+plus a background reaper makes crash recovery automatic: the resource returns
+to the pool without operator intervention. The reference implementation counts
+reclaimed leases as a first-class metric.
+
+\subsection{Group reservation is all-or-nothing}
+
+A collapsed building requiring 2 ambulances and 1 rescue team must not end up
+holding a rescue team hostage while the ambulances go elsewhere. Partial
+allocation both wastes the committed unit and \emph{hides the shortfall} from
+the operator, who sees an incident marked "assigned". Group reservation is
+therefore a small saga: acquire all leases, and on any failure compensate by
+releasing everything acquired so far.
+
+\subsection{Optimistic rather than pessimistic concurrency}
+
+Dispatch conflicts are rare \textemdash{} two shards genuinely contending for
+one unit is an edge case \textemdash{} but lock convoys under surge are fatal.
+Optimistic concurrency pays nothing in the common case and forces a re-read
+and retry in the rare one. Pessimistic row locks invert that trade exactly
+when the system is busiest.
+
+\begin{keybox}
+\textbf{Verification.} The invariant is asserted, not assumed. A
+multi-threaded contention test races twelve workers over twenty-five units for
+2{,}400 attempts and asserts that every unit has exactly one holder and that
+contention actually occurred. The full simulation additionally runs an
+integrity audit over the final state: zero conflicts in every configuration
+and every seed.
+\end{keybox}

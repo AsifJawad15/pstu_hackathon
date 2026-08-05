@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { EmergencyApplication } from "./application.ts";
@@ -7,6 +7,10 @@ import { AppError } from "./domain/errors.ts";
 import type { AssignmentStatus, IncidentInput, PublicWarningInput, ResourceTelemetryInput } from "./domain/types.ts";
 
 const MAX_BODY_BYTES = 256 * 1024;
+const CONSOLE_ASSETS = new Map(["index.html", "console.js", "styles.css"].map((file) => {
+  const body = readFileSync(join(process.cwd(), "web", file));
+  return [file, { body, etag: `"${createHash("sha256").update(body).digest("base64url")}"` }] as const;
+}));
 
 export function createHttpServer(app: EmergencyApplication) {
   return createServer(async (request, response) => {
@@ -16,6 +20,9 @@ export function createHttpServer(app: EmergencyApplication) {
     response.setHeader("x-content-type-options", "nosniff");
     response.setHeader("x-frame-options", "DENY");
     response.setHeader("cache-control", "no-store");
+    response.setHeader("referrer-policy", "no-referrer");
+    response.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=()");
+    response.setHeader("content-security-policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'");
     try {
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
       if (request.method === "GET" && url.pathname === "/health/live") return send(response, 200, { status: "UP" });
@@ -23,13 +30,21 @@ export function createHttpServer(app: EmergencyApplication) {
         return send(response, 200, { status: "READY", regionId: app.config.regionId, auditIntegrity: app.database.auditIntegrity() });
       }
       if (request.method === "GET" && url.pathname === "/metrics") {
+        app.platformTopology();
         response.writeHead(200, { "content-type": "text/plain; version=0.0.4" });
         return response.end(app.metrics.prometheus());
       }
       if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/console.js" || url.pathname === "/styles.css")) {
-        return serveConsole(url.pathname, response);
+        return serveConsole(url.pathname, request, response);
       }
       authenticate(request, app.config.apiToken);
+
+      if (request.method === "GET" && url.pathname === "/v1/system/snapshot") {
+        return send(response, 200, app.systemSnapshot());
+      }
+      if (request.method === "GET" && url.pathname === "/v1/platform/topology") {
+        return send(response, 200, app.platformTopology());
+      }
 
       if (request.method === "POST" && url.pathname === "/v1/incidents") {
         return send(response, 202, await app.reportIncident(await readJson<IncidentInput>(request)));
@@ -56,7 +71,8 @@ export function createHttpServer(app: EmergencyApplication) {
       if (request.method === "GET" && incidentGet) {
         const incident = app.database.getIncident(decodeURIComponent(incidentGet[1]!));
         if (!incident) throw new AppError("INCIDENT_NOT_FOUND", "Incident not found", 404);
-        return send(response, 200, { incident, assignments: app.database.assignmentsForIncident(incident.incidentId) });
+        return send(response, 200, { incident, assignments: app.database.assignmentsForIncident(incident.incidentId),
+          decision: app.database.latestDecisionForIncident(incident.incidentId) });
       }
       if (request.method === "POST" && url.pathname === "/v1/resources/telemetry") {
         return send(response, 202, app.resources.ingest(await readJson<ResourceTelemetryInput>(request)));
@@ -93,6 +109,14 @@ export function createHttpServer(app: EmergencyApplication) {
       const status = error instanceof AppError ? error.status : Number((error as { status?: number }).status ?? 500);
       const code = error instanceof AppError ? error.code : String((error as { code?: string }).code ?? "INTERNAL_ERROR");
       const message = status >= 500 ? "Request could not be completed" : error instanceof Error ? error.message : "Invalid request";
+      if (status >= 500) {
+        process.stderr.write(`${JSON.stringify({
+          level: "error", event: "http_request_failed", requestId,
+          method: request.method ?? "UNKNOWN", path: request.url?.split("?")[0] ?? "/",
+          code, errorType: error instanceof Error ? error.name : typeof error,
+          internalMessage: error instanceof Error ? error.message.slice(0, 300) : "Unknown internal error",
+        })}\n`);
+      }
       send(response, status, { error: { code, message, requestId } });
     } finally {
       app.metrics.increment("http_requests_total", { method: request.method ?? "UNKNOWN", status: String(response.statusCode) });
@@ -135,14 +159,18 @@ function send(response: ServerResponse, status: number, payload: unknown): void 
   response.end(JSON.stringify(payload));
 }
 
-function serveConsole(pathname: string, response: ServerResponse): void {
+function serveConsole(pathname: string, request: IncomingMessage, response: ServerResponse): void {
   const file = pathname === "/" ? "index.html" : pathname.slice(1);
   const contentType = file.endsWith(".js") ? "text/javascript; charset=utf-8"
     : file.endsWith(".css") ? "text/css; charset=utf-8" : "text/html; charset=utf-8";
-  try {
-    response.writeHead(200, { "content-type": contentType, "cache-control": "no-cache" });
-    response.end(readFileSync(join(process.cwd(), "web", file)));
-  } catch {
-    throw new AppError("NOT_FOUND", "Console asset not found", 404);
+  const asset = CONSOLE_ASSETS.get(file);
+  if (!asset) throw new AppError("NOT_FOUND", "Console asset not found", 404);
+  if (request.headers["if-none-match"] === asset.etag) {
+    response.writeHead(304, { etag: asset.etag, "cache-control": "private,no-cache" });
+    response.end();
+    return;
   }
+  response.writeHead(200, { "content-type": contentType, etag: asset.etag,
+    "cache-control": "private,no-cache" });
+  response.end(asset.body);
 }

@@ -1,0 +1,47 @@
+{
+  "response_mean_min": {
+    "baseline": 45.72,
+    "aegis": 39.47,
+    "delta_pct": -13.7
+  },
+  "response_p50_min": {
+    "baseline": 25.88,
+    "aegis": 30.94,
+    "delta_pct": 19.6
+  },
+  "response_p90_min": {
+    "baseline": 128.49,
+    "aegis": 78.41,
+    "delta_pct": -39.0
+  },
+  "response_p99_min": {
+    "baseline": 208.19,
+    "aegis": 155.81,
+    "delta_pct": -25.2
+  },
+  "severity_weighted_mean_min": {
+    "baseline": 179.33,
+    "aegis": 146.11,
+    "delta_pct": -18.5
+  },
+  "deadline_met_pct": {
+    "baseline": 61.07,
+    "aegis": 66.38,
+    "delta_pct": 8.7
+  },
+  "unserved_rate_pct": {
+    "baseline": 17.24,
+    "aegis": 14.08,
+    "delta_pct": -18.3
+  },
+  "utilisation_pct": {
+    "baseline": 28.97,
+    "aegis": 39.65,
+    "delta_pct": 36.9
+  },
+  "reassignment_rate_pct": {
+    "baseline": 0.0,
+    "aegis": 6.1,
+    "delta_pct": null
+  }
+}

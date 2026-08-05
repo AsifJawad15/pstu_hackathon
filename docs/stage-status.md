@@ -11,8 +11,7 @@ This repository is a runnable reference implementation plus production infrastru
 | 4 Resource/routing | Ordered telemetry, local spatial index, closures and conservative fallback | H3/OSRM production adapters and map validation |
 | 5 Decision | Deterministic feasible-first allocation and explanations | Policy calibration and load evidence |
 | 6 Reservation/dispatch | Conditional holds, fencing, signed commands and acknowledgements | HSM and real telecom/radio adapters |
-| 7 Optimization/comms | Bounded improvement interface, anti-thrashing policy, notifications and warnings | OR-Tools production adapter and authority approval |
+| 7 Optimization/comms | Bounded improvement, anti-thrashing, durable attempt evidence, provider circuits, unknown-result reconciliation, monotonic callbacks and warnings | OR-Tools and signed telecom/radio production adapters plus authority approval |
 | 8 HA/DR | Deployment topology, shard cutover logic, schema and runbooks | Three fault domains, paired region and restore exercises |
-| 9 Security/operations | API controls, audit chain, metrics, console, threat model and runbooks | Independent security review and on-call exercise |
+| 9 Security/operations | API controls, audit chain, metrics, console, threat model, SLO alerts, priority scheduling, deployment rollback rules and runbooks | Independent security review and on-call exercise |
 | 10 Validation | Automated functional/concurrency suite and benchmark harness | 50k events/s, chaos, DR and regional pilot evidence |
-

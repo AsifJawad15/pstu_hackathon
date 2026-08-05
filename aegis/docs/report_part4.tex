@@ -1,0 +1,246 @@
+% ======================================================== evaluation ======
+\section{Reference implementation and evaluation}
+\label{sec:eval}
+
+\subsection{What was built}
+
+Roughly 3{,}000 lines of dependency-light Python implementing the decision core
+and the infrastructure patterns described above, plus a discrete-event
+simulation harness. The harness drives the \emph{real} engine \textemdash{}
+\texttt{core.optimizer}, \texttt{core.priority}, \texttt{core.matching},
+\texttt{infra.store} \textemdash{} so the numbers below describe the actual
+system rather than a model of one.
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}lp{80mm}@{}}
+\toprule
+\textbf{Module} & \textbf{Contents} \\
+\midrule
+\texttt{domain/models} & Entities, state machines, assignment maturity, journey projection \\
+\texttt{core/geo} & Haversine, cell indexing, bucketed spatial index with expanding-ring search \\
+\texttt{core/eta} & Travel-time service: versioned cache, circuit breaker, pessimistic great-circle fallback, road-condition overlay \\
+\texttt{core/priority} & Explainable additive triage model with bounded aging \\
+\texttt{core/matching} & Jonker--Volgenant exact assignment, greedy warm start, LNS \\
+\texttt{core/coverage} & Self-exciting demand forecast, reserve protection, idle relocation \\
+\texttt{core/optimizer} & Two-tier engine, geographic sharding, churn control, decision records \\
+\texttt{infra/store} & Leases, optimistic concurrency, group-reservation saga, outbox, integrity audit \\
+\texttt{infra/event\_bus} & Partitioned log with ordering, bounded retry, DLQ, lag \\
+\texttt{infra/cache} & Versioned TTL cache, XFetch, single-flight \\
+\texttt{sim/*} & Deterministic scenario generator and discrete-event harness \\
+\texttt{tests/} & 36 tests covering exactness, monotonicity, conflict-freedom under thread contention, and degradation \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Experimental design}
+
+\begin{keybox}
+\input{tex/scenario.tex}
+
+\medskip
+Every policy is replayed against a \textbf{byte-identical} event stream
+generated once from a fixed seed. Differences between rows are therefore
+attributable to decision logic alone, not to the random number generator.
+The ablation adds one mechanism at a time so that each contribution is
+separately visible.
+\end{keybox}
+
+\subsection{Results}
+
+\begin{center}\small\input{tex/results_main.tex}\end{center}
+
+\medskip
+\begin{center}\small\input{tex/results_invariants.tex}\end{center}
+
+\subsection{Reading the results honestly}
+
+\begin{itemize}
+\item \textbf{The tail moves most.} Mean response improves 13.7\%; p90 improves
+      39.0\% and p99 improves 25.2\%. That ordering is the expected signature
+      of better allocation: the naive dispatcher handles easy cases adequately
+      and fails badly on the contended ones, which is precisely where the exact
+      solver earns its cost.
+
+\item \textbf{The median gets worse, and that is the design working.} Median
+      response rises from 25.9 to 30.9 minutes while every tail percentile
+      falls sharply. This is redistribution, not regression: the baseline
+      serves whoever is nearest, which flatters the median by handling easy
+      calls first and abandoning contended ones. AEGIS deliberately makes a
+      routine call wait so that a catastrophic one is reached at all
+      \textemdash{} which is what \emph{triage} means. The severity-weighted
+      mean, the metric that reflects that intent, improves 18.5\%. We report
+      the median because hiding it would misrepresent the trade.
+
+\item \textbf{Triage alone is not enough.} Adding the scoring model improves
+      the tail (p90 falls 22\%) but slightly \emph{worsens} the in-window rate
+      and the never-reached rate. Prioritising a queue does not create
+      capacity; it only reorders who waits. The large gains arrive with
+      re-optimisation, which is what actually reallocates.
+
+\item \textbf{Coverage awareness trades speed for reach.} The full
+      configuration is worse than the re-optimisation-only configuration on
+      mean response (39.5 vs 36.2 minutes) and marginally on in-window rate
+      (66.4\% vs 67.4\%), and clearly better on incidents never reached at all
+      (14.1\% vs 18.1\%) and utilisation (39.7\% vs 34.6\%). Holding a reserve
+      costs average speed and buys coverage for the calls that would otherwise
+      get nothing. Whether that is the right trade is a policy question for
+      clinicians and regulators, not an engineering one \textemdash{} which is
+      exactly why the coverage weight $\theta$ is a configurable parameter
+      with a measurable effect rather than a hard-coded rule. A service
+      optimising a published mean-response target would set it lower; a
+      service accountable for unreached calls would set it higher.
+
+\item \textbf{Utilisation rises 37\%} while churn stays at 6.1\% of commits.
+      The extra utilisation is real work delivered, not thrash: the engine
+      committed 1{,}491 assignments against the baseline's 738 over the same
+      stream, roughly double the unit-responses.
+
+\item \textbf{Zero resource conflicts} in every configuration and every seed,
+      corroborated by the multi-threaded contention test.
+
+\item \textbf{Degraded operation was exercised.} The full configuration served
+      2{,}236 travel-time estimates through the great-circle fallback during
+      the injected routing outage without a single failed dispatch, while
+      sustaining a 97\% cache hit rate. The baseline's much lower degraded
+      count (66) simply reflects that it makes far fewer estimates, not that
+      it is more resilient.
+\end{itemize}
+
+\subsection{Threats to validity}
+
+Stated plainly, because a result whose limits are hidden is not a result.
+
+\begin{itemize}
+\item The simulator is our own model of the world; travel times are
+      distance-based with detour and hazard multipliers rather than drawn from
+      a real road network. Absolute minutes are therefore not calibrated to
+      any real service, and only the \emph{relative} comparison is meaningful.
+\item The baseline is a competent nearest-available dispatcher with
+      priority-blind FIFO backfill. Real dispatch centres also have
+      experienced humans; the comparison is against an automated policy, not
+      against expert practice.
+\item Three seeds establish that the direction of the effect is stable, not
+      the precision of its magnitude.
+\item Service-time and bed-occupancy distributions are plausible but not
+      empirically fitted.
+\end{itemize}
+
+% ======================================================== limitations =====
+\section{Limitations and roadmap}
+
+\subsection{Known limitations of the current design}
+
+\begin{itemize}
+\item \textbf{No multi-stop sequencing.} A unit serves one incident, then
+      returns to the pool. Real ambulances sometimes chain calls. This is a
+      vehicle-routing extension, and the LNS layer is where it belongs.
+\item \textbf{Cross-region borrowing is greedy.} Shards are solved
+      sequentially with a claimed-resource set. A hierarchical coordinator
+      solving a coarse national transfer problem would be better and is the
+      natural next step.
+\item \textbf{The demand forecast is deliberately simple} \textemdash{} an
+      exponentially-weighted rate with a self-exciting term. A properly fitted
+      spatio-temporal Hawkes process or a learned model would forecast better,
+      and the interface is designed so it can be swapped without touching the
+      optimiser.
+\item \textbf{Coverage weight is uncalibrated.} Its effect is measured but the
+      right value is a policy decision requiring clinical input.
+\end{itemize}
+
+\subsection{Roadmap}
+
+\begin{enumerate}
+\item Real road-network integration (OSRM with live traffic) and calibration
+      against historical dispatch records.
+\item Hierarchical cross-region coordinator with a national transfer problem.
+\item Learned feature estimators upstream of the triage aggregator: predicted
+      casualty count, predicted service duration, escalation probability.
+\item Multi-stop sequencing and dynamic hospital-destination optimisation.
+\item Shadow-mode policy evaluation pipeline as a standing capability, so
+      every weight change ships with replayed evidence.
+\end{enumerate}
+
+% ========================================================== appendix ======
+\appendix
+\section{Appendix: an actual decision record}
+
+Produced by the reference implementation during the evaluation run. This is the
+artefact a dispatcher sees and an inquiry replays.
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}lp{80mm}@{}}
+\toprule
+\multicolumn{2}{@{}l}{\textbf{Assignment} \texttt{ASG-0000042} \textemdash{} incident \texttt{INC-0000018}, unit \texttt{RES-0000117}} \\
+\midrule
+Tier & \texttt{T1\_admission} \\
+Candidates considered & 36 \\
+Candidates feasible & 9 \\
+Rejected & \texttt{not\_available}: 21, \texttt{beyond\_reach\_radius}: 4, \texttt{capability\_below\_minimum}: 2 \\
+\addlinespace
+\multicolumn{2}{@{}l}{\emph{Why this incident ranked where it did}} \\
+Priority & 71.4 \;(\texttt{triage-v1.3.0}) \\
+\quad severity & 24.6 \quad (level 4) \\
+\quad urgency & 16.1 \quad (28-minute window, 6 minutes elapsed) \\
+\quad scale & 12.9 \quad (34 people affected) \\
+\quad hazard & 9.0 \quad (structural collapse) \\
+\quad vulnerability & 6.1 \\
+\quad escalation & 2.7 \quad (aging, bounded at 12) \\
+\addlinespace
+\multicolumn{2}{@{}l}{\emph{Why this unit}} \\
+ETA & 11.4 minutes \\
+\quad travel term & $-63.4$ \\
+\quad lateness term & $0.0$ \quad (arrives 16.6 minutes inside the window) \\
+\quad over-qualification & $+3.0$ \quad (level-2 unit on a level-1 slot) \\
+\quad scarcity & $0.0$ \quad (ambulance) \\
+\quad coverage & $0.0$ \quad (region retains 6 free units) \\
+\quad \textbf{total} & $\mathbf{-60.4}$ \\
+Runner-up cost & $-48.1$ \quad (unit 4.1 minutes further away) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Appendix: reproducing these results}
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Command} & \textbf{Effect} \\
+\midrule
+\texttt{python tests/test\_all.py} & Runs all 36 tests; no dependencies required \\
+\texttt{python run\_simulation.py} & Full ablation, 12 simulated hours \\
+\texttt{python run\_simulation.py -{}-seeds 3} & Repeats across seeds, reports medians \\
+\texttt{python run\_simulation.py -{}-policy aegis} & Single policy, writes sample decision records \\
+\texttt{python make\_tables.py} & Regenerates every table in this document from \texttt{artifacts/results.json} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent No number in this document was transcribed by hand; all tables are
+generated from the results file produced by the simulation run.
+
+\begin{keybox}
+\textbf{A note on determinism.} In production a re-optimisation epoch is
+bounded by wall-clock time, because that is what a latency budget means. That
+makes the number of shards refreshed per epoch depend on machine load, and
+therefore makes results irreproducible. Evaluation runs instead bound the epoch
+by a \emph{deterministic work budget} (shards per epoch), configured by
+\texttt{OptimizerConfig.deterministic\_budget}. This was found by running the
+same evaluation twice and getting different answers; it is the difference
+between a measurement and an anecdote.
+\end{keybox}
+
+\vspace{6mm}
+\begin{keybox}
+\textbf{Closing note on method.} Four substantive bugs were found by building
+the system rather than by describing it: a feasibility cutoff missing from an
+exact matcher that consequently dispatched units from hundreds of kilometres
+away; a coverage penalty charged against already-dispatched units, which made
+every busy vehicle look expensive relative to an idle one; slot-index rather
+than demand-level comparison, which reported interchangeable columns as
+displacements; and stale position estimates for units already in motion. Each
+one individually made the "optimised" system perform \emph{worse} than the
+naive baseline while every architecture diagram still looked correct. That is
+the argument for a running reference implementation.
+\end{keybox}
+
+\end{document}
