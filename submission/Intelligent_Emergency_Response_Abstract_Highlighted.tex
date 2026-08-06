@@ -1,0 +1,30 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{parskip}
+\pagestyle{empty}
+
+\definecolor{accent}{HTML}{173F5F}
+\newcommand{\key}[1]{\textbf{\textcolor{accent}{#1}}}
+
+\begin{document}
+
+\begin{center}
+{\Large\bfseries Intelligent Emergency Response \& Resource Optimization Platform}\\[0.6em]
+{\large\bfseries Abstract}
+\end{center}
+
+Disasters that trigger mass-casualty events often destroy the very \key{power} and \key{communication infrastructure} needed to coordinate response. Instead of treating this as an edge case, we propose a \key{hierarchical, offline-first, event-driven architecture} that continues operating in \key{connected, degraded, and isolated modes}.
+
+Each regional \key{Emergency Operation Center (EOC)} maintains a lightweight local broker, incident and resource state, decision engine, and human-dispatch capability, enabling immediate operation without dependence on a central service. Under normal connectivity, regional events synchronize through a durable event backbone for \key{explainable prioritization}, nationwide coordination, and continuous re-optimization. Critical incidents receive \key{instant greedy assignment}, while lower-priority incidents use \key{short-window batch optimization} to improve response time and fleet utilization.
+
+Resources are ranked using \key{ETA, capability, capacity, hospital readiness, route safety, and regional coverage}. Fast geospatial caches shortlist candidates, while \key{transactional, version-checked reservations} prevent double dispatch. A \key{saga-based workflow} reserves, notifies, confirms, or automatically compensates when a unit fails to acknowledge.
+
+Communication degrades gracefully from \key{4G/broadband} to \key{SMS/USSD}, \key{mesh radio}, and finally \key{store-and-forward synchronization}. Region-owned assets remain locally dispatchable, while shared scarce resources require signed ownership leases. On reconnection, urgent incidents and unresolved claims synchronize first, followed by telemetry and historical logs.
+
+Regional isolation, circuit breakers, replicated storage, signed communication, audit trails, observability, and human override make the platform \key{scalable, secure, fault-tolerant, and explainable} even when the disaster disrupts the infrastructure it relies upon.
+
+\end{document}

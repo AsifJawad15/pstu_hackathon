@@ -1,0 +1,47 @@
+name: Compile Abstract PDF
+
+on:
+  pull_request:
+    paths:
+      - 'submission/Intelligent_Emergency_Response_Abstract_Highlighted.tex'
+      - '.github/workflows/compile-abstract.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Compile LaTeX
+        uses: xu-cheng/latex-action@v3
+        with:
+          root_file: submission/Intelligent_Emergency_Response_Abstract_Highlighted.tex
+
+      - name: Save compiled PDF to branch
+        run: |
+          cp Intelligent_Emergency_Response_Abstract_Highlighted.pdf submission/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add submission/Intelligent_Emergency_Response_Abstract_Highlighted.pdf
+          if ! git diff --cached --quiet; then
+            git commit -m "Add compiled highlighted abstract PDF"
+            git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          fi
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p output
+          cp submission/Intelligent_Emergency_Response_Abstract_Highlighted.pdf output/
+          cp submission/Intelligent_Emergency_Response_Abstract_Highlighted.tex output/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: highlighted-abstract
+          path: output/
