@@ -21,7 +21,7 @@ jobs:
       - name: Prepare artifact
         run: |
           mkdir -p output
-          cp submission/Intelligent_Emergency_Response_Abstract_Highlighted.pdf output/
+          cp Intelligent_Emergency_Response_Abstract_Highlighted.pdf output/
           cp submission/Intelligent_Emergency_Response_Abstract_Highlighted.tex output/
 
       - name: Upload artifact
